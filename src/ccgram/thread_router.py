@@ -93,6 +93,7 @@ class TopicProvisioning:
     created_at: float = field(default_factory=time.time)
     retry_thread_id: int | None = None
     retry_at: float = 0.0
+    topic_mark_owner: str | None = None
 
 
 _active_chat_id: contextvars.ContextVar[int | None] = contextvars.ContextVar(
@@ -325,6 +326,7 @@ class ThreadRouter:
                     "created_at": claim.created_at,
                     "retry_thread_id": claim.retry_thread_id,
                     "retry_at": claim.retry_at,
+                    "topic_mark_owner": claim.topic_mark_owner,
                 }
                 for claim in self._topic_provisionings.values()
             ],
@@ -421,6 +423,7 @@ class ThreadRouter:
                 created_at = raw.get("created_at", 0.0)
                 retry_thread_id = raw.get("retry_thread_id")
                 retry_at = raw.get("retry_at", 0.0)
+                topic_mark_owner = raw.get("topic_mark_owner")
             except KeyError, AttributeError, TypeError, ValueError:
                 continue
 
@@ -462,6 +465,11 @@ class ThreadRouter:
                 or retry_at_value < 0
             ):
                 continue
+            if topic_mark_owner is not None and (
+                not isinstance(topic_mark_owner, str) or not topic_mark_owner
+            ):
+                topic_mark_owner = None
+                uncertain = True
             loaded[claim_id] = TopicProvisioning(
                 claim_id=claim_id,
                 user_id=user_id,
@@ -474,6 +482,7 @@ class ThreadRouter:
                 created_at=created_at_value,
                 retry_thread_id=retry_thread_id,
                 retry_at=retry_at_value,
+                topic_mark_owner=topic_mark_owner,
             )
         return list(loaded.values())
 
@@ -743,6 +752,7 @@ class ThreadRouter:
         target_id: str | None = None,
         previous_target_id: str | None = None,
         kind: TopicProvisioningKind,
+        topic_mark_owner: str | None = None,
     ) -> TopicProvisioning:
         """Durably claim a topic/target pair before starting creation."""
         if (
@@ -757,6 +767,11 @@ class ThreadRouter:
         previous_target_id = self._validate_provisioning_target_id(
             previous_target_id, field_name="previous_target_id"
         )
+        topic_mark_owner = self._validate_provisioning_target_id(
+            topic_mark_owner, field_name="topic_mark_owner"
+        )
+        if topic_mark_owner is not None and target_id is None:
+            raise ValueError("Attach a native target before capturing its owner")
         if not isinstance(kind, str) or kind not in _TOPIC_PROVISIONING_KINDS:
             raise ValueError(f"Unknown topic provisioning kind: {kind!r}")
         if thread_id is None and target_id is None:
@@ -793,11 +808,31 @@ class ThreadRouter:
             target_id=target_id,
             previous_target_id=previous_target_id,
             kind=cast(TopicProvisioningKind, kind),
+            topic_mark_owner=topic_mark_owner,
         )
         self._topic_provisionings[claim_id] = claim
         self._owned_provisioning_claims.add(claim_id)
         self._schedule_save()
         return claim
+
+    def capture_provisioning_owner(
+        self, claim_id: str, owner: str | None
+    ) -> TopicProvisioning:
+        """Capture an original native witness once, never from later observation."""
+        owner = self._validate_provisioning_target_id(
+            owner, field_name="topic_mark_owner"
+        )
+        claim = self._require_topic_provisioning(claim_id)
+        if owner is None or claim.topic_mark_owner == owner:
+            return claim
+        if claim.topic_mark_owner is not None:
+            raise ValueError("Provisioning native owner changed")
+        if claim.target_id is None:
+            raise ValueError("Attach a native target before capturing its owner")
+        updated = replace(claim, topic_mark_owner=owner)
+        self._topic_provisionings[claim.claim_id] = updated
+        self._schedule_save()
+        return updated
 
     def attach_provisioning_topic(
         self, claim_id: str, thread_id: int

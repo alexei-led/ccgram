@@ -75,6 +75,10 @@ Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one 
 
 Telegram shares its native slash-command suggestions across topics. CCGram keeps `/commands`, `/sessions`, `/sync`, and `/upgrade` in that list. `/commands` opens the current topic’s pinned panel with session-specific actions. See [topic command panels](docs/guides.md#topic-command-panels-commands).
 
+## Topic Discovery
+
+Automatic discovery remains the default. Set `CCGRAM_TOPIC_DISCOVERY=marked` to create automatic Telegram topics only for explicitly selected tmux windows, Herdr terminals, or agterm primary sessions. Use `ccgram topic status` to get exact target IDs, then `ccgram topic mark TARGET` or `ccgram topic unmark TARGET`. Unmarking keeps existing bound topics connected. See the [operator guide](docs/guides.md#marked-only-discovery) and [native storage and limits](docs/design/marked-topic-discovery.md).
+
 ## Provider Switching
 
 Topic titles retain their status icon and show a short provider prefix: `Pi · task`, `Claude · task`, or `Term · workspace`. A confirmed automatic switch produces one silent notice; startup, repeated polling, and short-lived intermediate providers do not. Manual changes use the `/agent` reply instead of a second notice.

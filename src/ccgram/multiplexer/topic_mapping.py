@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from .base import MultiplexerCapabilities, WindowRef
 
+
 # Separates workspace, tab, and optional pane parts in a Herdr topic title.
 TOPIC_PREFIX_SEPARATOR = " ▸ "
 

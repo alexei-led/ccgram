@@ -16,12 +16,13 @@ from typing import TYPE_CHECKING, Any
 from ..telegram_client import PTBTelegramClient, TelegramClient
 
 if TYPE_CHECKING:
-    from telegram import Update
+    from telegram import Message, Update
     from telegram.ext import ContextTypes
 
 from ..config import config
 from ..session_map import session_map_prefix
 from ..thread_router import thread_router
+from ..topic_selection import detach_topic_target
 from ..window_state_ports import legacy_state
 from ..topic_state_registry import topic_state
 from ..utils import handle_general_topic_message, is_general_topic, log_throttle_reset
@@ -153,6 +154,14 @@ async def unbind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     is_legacy_herdr = legacy_state.is_legacy_herdr(window_id)
     if is_legacy_herdr:
         legacy_state.archive_legacy_herdr(window_id, user.id, thread_id)
+    mark_cleared = True
+    if config.topic_discovery_mode == "marked":
+        mark_cleared = await detach_topic_target(
+            user.id,
+            thread_id,
+            window_id,
+            chat_id=chat_id if isinstance(chat_id, int) else None,
+        )
     client = PTBTelegramClient(context.bot)
     await enqueue_status_update(client, user.id, window_id, None, thread_id)
     clear_kwargs: dict = {"window_id": window_id, "window_dead": False}
@@ -161,19 +170,36 @@ async def unbind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await clear_topic_state(
         user.id, thread_id, client, context.user_data, **clear_kwargs
     )
-    thread_router.unbind_thread(
-        user.id, thread_id, chat_id=chat_id if isinstance(chat_id, int) else None
-    )
+    if config.topic_discovery_mode != "marked":
+        thread_router.unbind_thread(
+            user.id, thread_id, chat_id=chat_id if isinstance(chat_id, int) else None
+        )
+    await _reply_unbound(update.message, display, is_legacy_herdr, mark_cleared)
+
+
+async def _reply_unbound(
+    message: Message, display: str, is_legacy_herdr: bool, mark_cleared: bool
+) -> None:
+    """Describe detach without claiming an unfinished native clear succeeded."""
     if is_legacy_herdr:
         await safe_reply(
-            update.message,
+            message,
             f"📦 Archived legacy Herdr binding `{display}` without closing its session.\n"
             "It remains blocked if restored; use /rollback in this topic to restore "
             "this exact binding, or send a message to explicitly bind a listed session target.",
         )
         return
+    if not mark_cleared:
+        await safe_reply(
+            message,
+            f"⚠ Unbound from window `{display}`; the session is still running. "
+            "Native selection clear is pending and will be retried. "
+            "If its owner is unconfirmed, explicitly unmark the CURRENT target; "
+            "ccgram cannot guess that terminal.",
+        )
+        return
     await safe_reply(
-        update.message,
+        message,
         f"✂ Unbound from window `{display}`. The session is still running.\n"
         "Send a message in this topic to rebind or create a new session.",
     )

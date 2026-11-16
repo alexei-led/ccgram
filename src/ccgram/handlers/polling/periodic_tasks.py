@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from ...config import config
+from ...topic_selection import recover_topic_selections
 from ...telegram_client import TelegramClient
 from ...utils import log_throttle_sweep
 from ...session_protocol.telegram import TelegramSessionAdapter
@@ -55,6 +56,7 @@ async def run_periodic_tasks(
 
     if now - timers["topic_check"] >= TOPIC_CHECK_INTERVAL:
         timers["topic_check"] = now
+        await recover_topic_selections()
         recovery = await recover_topic_provisioning(client, adapter=adapter)
         await prune_stale_state(all_windows)
         if not recovery.get("rate_limited"):

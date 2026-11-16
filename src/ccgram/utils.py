@@ -92,6 +92,7 @@ def log_throttle_sweep(
 
 
 CCGRAM_DIR_ENV = "CCGRAM_DIR"
+TMUX_WINDOW_ID_FORMAT = "#{window_id}"
 
 # Maximum number of JSONL lines to scan when extracting session metadata.
 _SCAN_LINES = 20
@@ -149,6 +150,11 @@ def atomic_write_json(path: Path, data: Any, indent: int = 2) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, str(path))
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)

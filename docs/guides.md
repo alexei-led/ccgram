@@ -209,6 +209,7 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CLAUDE_CONFIG_DIR` / `--claude-config-dir`           | `~/.claude`                    | Override Claude config directory (for wrappers like ce, cc-mirror)                                   |
 | `TMUX_SESSION_NAME` / `--tmux-session`                | `ccgram`                       | tmux session name                                                                                    |
 | `CCGRAM_MULTIPLEXER`                                  | `tmux`                         | Terminal multiplexer backend: `tmux` (default), `herdr` or `agterm`                                  |
+| `CCGRAM_TOPIC_DISCOVERY` / `--topic-discovery`        | `auto`                         | Automatic topic admission: `auto` or [`marked`](#marked-only-discovery)                              |
 | `CCGRAM_AGTERM_WORKSPACES`                            | `ccgram`                       | agterm only: workspaces ccgram may adopt sessions from (comma-separated; `*` for all)                |
 | `CCGRAM_PROVIDER` / `--provider`                      | `claude`                       | Default agent provider (`claude`, `codex`, `gemini`, `pi`, `shell`)                                  |
 | `CCGRAM_<NAME>_COMMAND`                               | _(from provider)_              | Per-provider launch command (env only, see below)                                                    |
@@ -637,11 +638,58 @@ toolbar; pinned names survive window re-keying.
 
 `/bind` in an unbound topic lists windows that are running but not bound to
 any topic; one tap attaches the chosen one and renames the topic. Sessions
-started from the terminal still become topics automatically.
+started from the terminal become topics automatically in the default `auto` discovery mode.
 
 ## Creating Sessions from the Terminal
 
 Besides creating sessions through Telegram topics, you can create windows directly in your terminal multiplexer.
+
+The backend instructions below describe default automatic discovery. Use marked-only discovery to select which terminals receive automatic topics.
+
+### Marked-only discovery
+
+Set the discovery mode in the bot's `.env`, or start it with `ccgram run --topic-discovery marked`:
+
+```ini
+CCGRAM_TOPIC_DISCOVERY=marked
+```
+
+Use the same backend, actual native endpoint and CCGram state directory as the bot. Replace `TARGET` with an exact `id` from status, not a name, owner token, or active-terminal guess:
+
+```bash
+ccgram topic status
+ccgram topic mark TARGET
+ccgram topic status TARGET
+ccgram topic unmark TARGET
+```
+
+These commands do not require Telegram credentials. Status emits JSON with `backend`, `mode`, live `targets` (including native `marked`, `markable`, and diagnostic `owner`), and `pending_operations`. Diagnostics go to stderr. Status is read-only. The journal records unfinished native work and dispatch safety evidence, not a second selected-state preference.
+
+With the bot running, mutation uses the matching state/backend/native-endpoint daemon's private local socket. Otherwise the CLI must obtain the same exclusive state-writer lease. It never bypasses a busy lease or unavailable matching daemon with a direct native write. Unknown or mismatching native endpoint identity refuses mutation without creating new retryable manual intent. A matching backend name, target ID or copied native owner is insufficient. Opposite prepared intent blocks a manual write. Same-desired prepared work can complete through the shared journal, but cannot bypass an armed attempt.
+
+Selection uses a window-local native option in tmux, an owned ON/OFF manual-label suffix in standard Herdr, and the primary session flag in agterm. Herdr retains a visible OFF owner suffix after unmarking so restoration and reselection keep the same owner. Agterm splits remain explicitly bindable without marking the primary. Ordinary Herdr names do not mark a terminal; copying a layout can copy explicit marker state, so fresh-worker templates must omit it. See [native storage and restoration limits](design/marked-topic-discovery.md#native-storage-and-restoration).
+
+Unmarking leaves bound topics connected. Marked-mode last-topic close or `/unbind` clears selection without killing the terminal, and deliberate detach is exempt from orphan TTL. If unmarking withdraws an unfinished explicit creation, CCGram retains its exact uncertain claim unbound and does not delete a possibly human-used topic. With no armed attempt, reselecting the native target permits creation recovery. Reselection does not clear dispatch uncertainty. See [lifecycle details](design/marked-topic-discovery.md#unfinished-or-ambiguous-detach).
+
+#### Native-write quarantine and recovery
+
+A native update can remain able to execute after a timeout, EOF, cancellation or client crash. CCGram saves an armed attempt before any possible dispatch. In status, `pending_operations` has `attempt: null` for prepared work or an attempt containing its dispatched `desired` and `witness`.
+
+Guarded marker writes require the reviewed native versions: agterm 0.42.3, Herdr 0.9.5, or tmux 3.8. Other versions and unproved/proxied/inherited endpoints refuse before mutation. Ordinary backend protocol compatibility does not establish guarded-write support.
+
+An armed attempt blocks new admission and binding for the affected resource in **both** discovery modes. It also blocks further native writes and settlement. Existing bound topics, forwarding and liveness continue. Independent, verifiable owners remain usable.
+
+1. Run `ccgram topic status` with the bot's backend and state directory. Inspect pending work and stderr diagnostics.
+2. Do not delete or edit the journal, socket pins or state lock. Do not retry same/opposite marks to bypass quarantine.
+3. Save work before deciding whether to retire the affected native server through its normal native controls. **Retiring a tmux server can end its terminals and agents and lose unsaved work.** CCGram never kills or restarts native processes for recovery.
+4. Leave the journal intact. Existing maintenance checks exact native-process retirement and safe cleanup of its recorded pin. A timer, snapshot, replaced socket or changed PID is insufficient.
+5. After verified retirement, maintenance removes only that attempt. It freshly checks the owner and latest desired intent before any new journaled write. Use status again to inspect the result. A changed or unknown owner remains unresolved rather than being guessed.
+
+There is no separate recovery command or acknowledgement switch. Restarting ccgram, reselection, an absent target or a currently correct flag cannot prove an old write finished. If retirement or endpoint ownership cannot be proven, quarantine remains. Normal maintenance checks run every 60 seconds, but elapsed time is not completion evidence. Without the daemon, existing mark/unmark commands use the same retirement proof under the exclusive state lease. They cannot bypass an armed attempt whose executor remains alive or unproved. See the [dispatch contract](design/marked-topic-discovery.md#dispatch-quarantine-and-recovery).
+
+If mark/unmark reports `Native marker endpoint is unconfirmed`, inspect native provenance before retrying. The current agterm metadata check refused with macOS `-67034` (`errSecCSStaticCodeChanged`), indicating that the installed App and running image differ. Save work and restart agterm normally before retrying its provenance check. CCGram does not restart the App or bypass this check. An App restart alone does not settle an armed attempt. A positive live guarded agterm write has not been verified against the mismatched running image.
+
+When upgrading, stop older ccgram writers and CLI invocations before starting the new version. Ordinary v4.22 state without a marker journal remains valid. Unpublished three- or four-field development journal rows are incompatible and fail closed. Preserve them for investigation rather than deleting evidence or assuming a migration.
 
 ### tmux (default)
 

@@ -21,10 +21,19 @@ from __future__ import annotations
 
 import structlog
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Self, cast
 
 from .herdr_targets import is_herdr_session_target
+from .topic_mark_journal import (
+    TOPIC_MARK_OPERATIONS_KEY,
+    TopicMarkAttempt,
+    TopicMarkOperation,
+    operation_matches,
+    parse_topic_mark_operations,
+)
+
+from .topic_mark_types import TopicMarkWriteWitness
 
 logger = structlog.get_logger()
 
@@ -169,6 +178,10 @@ class WindowState:
     # runtime provider switches so agent exits cannot be mistaken for shell.
     # Appended to preserve positional construction compatibility.
     initial_provider_name: str = ""
+    # Deliberate marked-mode detach protects an otherwise ccgram-created
+    # terminal from orphan TTL without changing its historical origin.
+    topic_detached: bool = False
+    topic_mark_owner: str | None = None
 
     def to_dict(self) -> dict[str, Any]:  # noqa: C901, PLR0912
         d: dict[str, Any] = {
@@ -191,6 +204,10 @@ class WindowState:
             d["tool_call_visibility"] = self.tool_call_visibility
         if self.origin != DEFAULT_WINDOW_ORIGIN:
             d["origin"] = self.origin
+        if self.topic_detached:
+            d["topic_detached"] = True
+        if self.topic_mark_owner:
+            d["topic_mark_owner"] = self.topic_mark_owner
         if self.panes:
             d["panes"] = {pid: p.to_dict() for pid, p in self.panes.items()}
         if self.pane_lifecycle_notify is not None:
@@ -240,6 +257,13 @@ class WindowState:
                 if data.get("origin", DEFAULT_WINDOW_ORIGIN) in WINDOW_ORIGINS
                 else DEFAULT_WINDOW_ORIGIN
             ),
+            topic_detached=data.get("topic_detached") is True,
+            topic_mark_owner=(
+                data["topic_mark_owner"]
+                if isinstance(data.get("topic_mark_owner"), str)
+                and data["topic_mark_owner"]
+                else None
+            ),
             panes=panes,
             pane_lifecycle_notify=data.get("pane_lifecycle_notify"),
             worktree_path=data.get("worktree_path"),
@@ -275,6 +299,7 @@ class WindowStateStore:
         on_hookless_provider_switch: Callable[[str], None],
     ) -> None:
         self.window_states: dict[str, WindowState] = {}
+        self.topic_mark_operations: dict[tuple[str, str], TopicMarkOperation] = {}
         self._schedule_save: Callable[[], None] = schedule_save
         self._on_hookless_provider_switch: Callable[[str], None] = (
             on_hookless_provider_switch
@@ -283,6 +308,7 @@ class WindowStateStore:
     def reset(self) -> None:
         """Clear all state. Used for test isolation."""
         self.window_states.clear()
+        self.topic_mark_operations.clear()
 
     # ------------------------------------------------------------------
     # Serialization
@@ -323,6 +349,109 @@ class WindowStateStore:
             return
         state.origin = origin
         self._schedule_save()
+
+    def set_topic_selection(
+        self, window_id: str, *, detached: bool, owner: str | None
+    ) -> None:
+        """Update current observed ownership/lifetime, never unfinished effects."""
+        state = self.get_window_state(window_id)
+        if state.topic_detached == detached and state.topic_mark_owner == owner:
+            return
+        state.topic_detached = detached
+        state.topic_mark_owner = owner
+        self._schedule_save()
+
+    def queue_topic_mark(
+        self,
+        window_id: str,
+        owner: str | None,
+        desired: bool,
+        *,
+        detach_clear: bool = False,
+    ) -> TopicMarkOperation:
+        operation = TopicMarkOperation(
+            window_id, owner, desired, detach_clear=detach_clear
+        )
+        current = self.topic_mark_operations.get(operation.key)
+        if current is not None:
+            # An explicit unmark cannot become cancelable on a later detach.
+            protected = (
+                current.detach_clear and detach_clear
+                if current.desired == desired
+                else detach_clear
+            )
+            operation = replace(current, desired=desired, detach_clear=protected)
+            if operation == current:
+                return current
+        self.topic_mark_operations[operation.key] = operation
+        self._schedule_save()
+        return operation
+
+    def settle_topic_mark(self, operation: TopicMarkOperation) -> bool:
+        current = self.topic_mark_operations.get(operation.key)
+        if current != operation or operation.attempt is not None:
+            return False
+        del self.topic_mark_operations[operation.key]
+        self._schedule_save()
+        return True
+
+    def restore_topic_mark(self, operation: TopicMarkOperation) -> None:
+        current = self.topic_mark_operations.get(operation.key)
+        if current is None:
+            self.topic_mark_operations[operation.key] = operation
+            self._schedule_save()
+        elif operation.attempt is not None and current.attempt is None:
+            self.topic_mark_operations[operation.key] = replace(
+                current, attempt=operation.attempt
+            )
+            self._schedule_save()
+
+    def begin_topic_mark_attempt(
+        self, operation: TopicMarkOperation, witness: TopicMarkWriteWitness
+    ) -> TopicMarkOperation:
+        current = self.topic_mark_operations.get(operation.key)
+        if current is None or current != operation or current.attempt is not None:
+            raise ValueError("Marker intent changed or an attempt remains armed")
+        armed = replace(current, attempt=TopicMarkAttempt(current.desired, witness))
+        self.topic_mark_operations[operation.key] = armed
+        self._schedule_save()
+        return armed
+
+    def finish_topic_mark_attempt(
+        self, window_id: str, *, owner: str | None, dispatch_id: str
+    ) -> TopicMarkOperation | None:
+        key = TopicMarkOperation(window_id, owner, False).key
+        current = self.topic_mark_operations.get(key)
+        if (
+            current is None
+            or current.attempt is None
+            or current.attempt.witness.dispatch_id != dispatch_id
+        ):
+            return None
+        finished = replace(current, attempt=None)
+        self.topic_mark_operations[key] = finished
+        self._schedule_save()
+        return finished
+
+    def topic_mark_journal_to_dict(self) -> dict[str, Any]:
+        if not self.topic_mark_operations:
+            return {}
+        return {
+            TOPIC_MARK_OPERATIONS_KEY: [
+                operation.to_dict() for operation in self.topic_mark_operations.values()
+            ]
+        }
+
+    def load_topic_mark_journal(self, state: dict[str, Any]) -> None:
+        self.topic_mark_operations = {
+            operation.key: operation for operation in parse_topic_mark_operations(state)
+        }
+
+    def has_pending_topic_mark(self, window_id: str, owner: str | None) -> bool:
+        return any(
+            operation_matches(operation, window_id, owner)
+            for operation in self.topic_mark_operations.values()
+        )
 
     def set_worktree(self, window_id: str, worktree_path: str, branch: str) -> None:
         """Persist worktree path + branch for a window. No-op when unchanged."""
@@ -709,6 +838,9 @@ class WindowStateStore:
                 and wid not in bound_window_ids
                 and wid not in live_window_ids
                 and not self.is_archived_legacy_herdr(wid)
+                and not self.has_pending_topic_mark(
+                    wid, self.window_states[wid].topic_mark_owner
+                )
             )
         ]
         if not stale:

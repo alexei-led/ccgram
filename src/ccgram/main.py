@@ -17,18 +17,25 @@ import logging
 import os
 import signal
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TextIO
 
 import structlog
 
+from .state_writer_lock import STATE_WRITER_LEASE_KEY
+
 if TYPE_CHECKING:
     from aiohttp import web
+    from pathlib import Path
+    from .state_writer_lock import StateWriterLease
 
 # Tracks which signal triggered shutdown (0 = none/clean exit)
 _shutdown_signal = 0
 
 # Mini App server runner — populated when CCGRAM_MINIAPP_BASE_URL is set.
 _miniapp_runner: "web.AppRunner | None" = None
+
+# Retained through final flushes and workers until process exit/exec.
+_state_writer_lease: "StateWriterLease | None" = None
 
 
 def _shutdown_reason() -> str:
@@ -154,14 +161,14 @@ def _log_level_styles() -> dict[str, str]:
     return styles
 
 
-def setup_logging(log_level: str) -> None:
+def setup_logging(log_level: str, *, output: TextIO | None = None) -> None:
     """Configure structured, colored logging for interactive CLI use."""
     numeric_level = getattr(logging, log_level, None)
     if not isinstance(numeric_level, int):
         numeric_level = logging.INFO
 
     level_styles = _log_level_styles()
-    stdout_colors = _use_colors(sys.stdout)
+    stdout_colors = _use_colors(sys.stdout if output is None else output)
     stderr_colors = _use_colors(sys.stderr)
 
     structlog.configure(
@@ -183,7 +190,7 @@ def setup_logging(log_level: str) -> None:
         ],
         wrapper_class=structlog.make_filtering_bound_logger(numeric_level),
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.PrintLoggerFactory(file=output),
         cache_logger_on_first_use=True,
     )
 
@@ -226,6 +233,9 @@ def _ensure_tmux_session(auto_detected: bool) -> None:
     # Lazy: main runs `ccgram` startup; defer imports until the run subcommand executes
     from .multiplexer.tmux import tmux_manager
 
+    tmux_manager.session_name = config.tmux_session_name
+    tmux_manager.main_window_name = config.tmux_main_window_name
+    tmux_manager.own_window_id = config.own_window_id
     logger = structlog.get_logger()
 
     # In auto-detect mode, the session must already exist.
@@ -248,10 +258,21 @@ def _ensure_tmux_session(auto_detected: bool) -> None:
     logger.info("Tmux session '%s' ready", session.session_name)
 
 
+def _claim_state_writer(state_path: "Path") -> "StateWriterLease":
+    # Lazy: non-daemon commands must never claim persistent bot state.
+    from .state_writer_lock import StateWriterLease
+
+    global _state_writer_lease
+    lease = StateWriterLease(state_path)
+    if not lease.try_acquire():
+        raise RuntimeError("Another process owns this ccgram state directory")
+    _state_writer_lease = lease
+    return lease
+
+
 def run_bot() -> None:
     """Start the bot. Called by the ``run`` Click command after env is set."""
-    log_level = (os.environ.get("CCGRAM_LOG_LEVEL") or "INFO").upper()
-    setup_logging(log_level)
+    setup_logging((os.environ.get("CCGRAM_LOG_LEVEL") or "INFO").upper())
 
     # --- Auto-detect tmux session (before config import) ---
     explicit_session = os.environ.get("TMUX_SESSION_NAME")
@@ -294,6 +315,8 @@ def run_bot() -> None:
         print("Get your user ID from @userinfobot on Telegram.")
         sys.exit(1)
 
+    lease = _claim_state_writer(config.state_file)
+
     if own_wid:
         config.own_window_id = own_wid
 
@@ -334,6 +357,7 @@ def run_bot() -> None:
         restart_requested = True
 
     application = create_bot()
+    application.bot_data[STATE_WRITER_LEASE_KEY] = lease
     application.bot_data[REQUEST_RESTART_KEY] = request_restart
     application.bot_data[GET_SHUTDOWN_REASON_KEY] = _shutdown_reason
     _install_signal_handlers(loop)

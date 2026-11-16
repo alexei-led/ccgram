@@ -32,5 +32,32 @@ jobs:
         run: uv run deptry src
       - name: Unit tests
         run: uv run pytest tests/ -m "not integration and not e2e" --tb=short -v --timeout=30
+      - name: Install reviewed tmux for native integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmux_version=3.8
+          prefix="$RUNNER_TEMP/ccgram-tmux-$tmux_version"
+          build_dir=$(mktemp -d "$RUNNER_TEMP/ccgram-tmux-build.XXXXXX")
+          trap 'rm -rf "$build_dir"' EXIT
+          if command -v tmux; then tmux -V; fi
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential libevent-dev libncurses-dev pkg-config bison
+          curl --fail --location --silent --show-error \
+            "https://github.com/tmux/tmux/releases/download/$tmux_version/tmux-$tmux_version.tar.gz" \
+            --output "$build_dir/tmux.tar.gz"
+          printf '%s  %s\n' e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e "$build_dir/tmux.tar.gz" | sha256sum --check
+          tar -xzf "$build_dir/tmux.tar.gz" -C "$build_dir"
+          (
+            cd "$build_dir/tmux-$tmux_version"
+            ./configure --prefix="$prefix"
+            make -j2
+            make install
+          )
+          test "$("$prefix/bin/tmux" -V)" = "tmux $tmux_version"
+          printf '%s\n' "$prefix/bin" >>"$GITHUB_PATH"
       - name: Integration tests
-        run: uv run pytest tests/integration/ -m "not llm" --tb=short -v --timeout=30
+        run: |
+          command -v tmux
+          tmux -V
+          uv run pytest tests/integration/ -m "not llm" --tb=short -v --timeout=30

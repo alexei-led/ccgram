@@ -47,13 +47,13 @@ from .session_map import (
     session_map_prefix,
     strip_session_map_prefix,
 )
-from .window_state_ports import identity_state
+from .window_state_ports import identity_state, lifecycle_state
 from .session_lifecycle import session_lifecycle
 from .multiplexer import multiplexer as tmux_manager
-from .multiplexer.base import canonical_window_id
+from .multiplexer.base import WindowRef, canonical_window_id
 from .multiplexer.reconciliation import list_windows_for_reconciliation
 from .multiplexer.window_liveness import note_live_windows
-from .multiplexer.topic_mapping import is_agent_topic_window
+from .topic_discovery import should_adopt_window
 from .monitor_events import NewMessage, NewWindowEvent, SessionInfo
 from .transcript_reader import TranscriptReader, render_transcript_batch
 from .session_protocol.events import EventHub
@@ -91,6 +91,18 @@ def _adoption_lookup(adoptable_window_ids: set[str]) -> set[str]:
     spelling, since the audit reports orphan ids straight out of it.
     """
     return {canonical_window_id(wid) for wid in adoptable_window_ids}
+
+
+def _observe_bound_topic_owners(
+    windows: list[WindowRef], bound_window_ids: set[str]
+) -> None:
+    """Refresh known bound ownership without tracking every discovered worker."""
+    bound = _adoption_lookup(bound_window_ids)
+    for window in windows:
+        if canonical_window_id(window.window_id) in bound:
+            lifecycle_state.observe_topic_mark_owner(
+                window.window_id, window.topic_mark_owner
+            )
 
 
 class SessionMonitor:
@@ -853,14 +865,9 @@ class SessionMonitor:
     ) -> None:
         """Fire a NewWindowEvent for each live window not in session_map / bound.
 
-        Surfaces windows the hook never registered (no session_map entry) so
-        they can become topics. What qualifies is the backend's own verdict,
-        carried per window in ``WindowRef.topic_eligible``: herdr marks records
-        holding a guarded target and an agent label, agterm marks in-scope
-        sessions running an agent, tmux marks everything except the placeholder
-        main window, its own window and ``_``-prefixed ones, which its complete
-        listing returns ineligible instead of dropping. No capability flag
-        gates this; keying it on one produced two bugs in a row.
+        Surfaces windows the hook never registered (no session_map entry).
+        The central admission policy combines backend eligibility with the
+        configured discovery mode; the complete listing still drives liveness.
         """
         if not self._new_window_callback:
             return
@@ -868,7 +875,6 @@ class SessionMonitor:
         # session_monitor; hoisting forms a startup cycle.
         from .thread_router import thread_router
 
-        caps = tmux_manager.capabilities
         known_lookup = _adoption_lookup(known_window_ids)
         bound_lookup = _adoption_lookup(
             {wid for _, _, wid in thread_router.iter_thread_bindings()}
@@ -879,7 +885,16 @@ class SessionMonitor:
                 continue
             if window_key in bound_lookup:
                 continue
-            if not is_agent_topic_window(window, caps):
+            if not should_adopt_window(
+                window,
+                mode=config.topic_discovery_mode,
+                detach_pending=lifecycle_state.is_topic_detach_pending(
+                    window.window_id, owner=window.topic_mark_owner
+                ),
+                quarantined=lifecycle_state.is_topic_mark_quarantined(
+                    window.window_id, owner=window.topic_mark_owner
+                ),
+            ):
                 continue
             event = NewWindowEvent(
                 window_id=window.window_id,
@@ -1033,7 +1048,20 @@ class SessionMonitor:
                 adoptable_window_ids = (
                     None
                     if all_windows is None
-                    else {w.window_id for w in all_windows if w.topic_eligible}
+                    else {
+                        w.window_id
+                        for w in all_windows
+                        if should_adopt_window(
+                            w,
+                            mode=config.topic_discovery_mode,
+                            detach_pending=lifecycle_state.is_topic_detach_pending(
+                                w.window_id, owner=w.topic_mark_owner
+                            ),
+                            quarantined=lifecycle_state.is_topic_mark_quarantined(
+                                w.window_id, owner=w.topic_mark_owner
+                            ),
+                        )
+                    }
                 )
                 if all_windows is None:
                     log_throttled(
@@ -1058,6 +1086,9 @@ class SessionMonitor:
                     from .thread_router import thread_router
 
                     _sm.reconcile_window_aliases(all_windows)
+                    _observe_bound_topic_owners(
+                        all_windows, thread_router.all_bound_window_ids()
+                    )
                     note_live_windows(all_windows, thread_router.all_bound_window_ids())
 
                 # Hook routing is exact-bound: consuming a canonical event

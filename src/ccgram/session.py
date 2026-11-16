@@ -142,6 +142,7 @@ class SessionManager:
     def _serialize_state(self) -> dict[str, Any]:
         """Serialize all state to a dict for persistence."""
         result = {"window_states": window_store.to_dict()}
+        result.update(window_store.topic_mark_journal_to_dict())
         result.update(user_preferences.to_dict())
         result.update(thread_router.to_dict())
         return result
@@ -175,6 +176,7 @@ class SessionManager:
         if not state:
             return
 
+        window_store.load_topic_mark_journal(state)
         window_store.from_dict(state.get("window_states", {}))
         migrated = False
 
@@ -751,6 +753,9 @@ class SessionManager:
                 and canonical_window_id(wid) not in bound_lookup
                 and canonical_window_id(wid) not in live_lookup
                 and not window_store.is_archived_legacy_herdr(wid)
+                and not window_store.has_pending_topic_mark(
+                    wid, self.window_states[wid].topic_mark_owner
+                )
             )
         ]
         if not stale:
