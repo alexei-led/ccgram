@@ -21,7 +21,7 @@ from telegram import CallbackQuery, Message
 from telegram.error import TelegramError
 
 from ...config import config
-from ...topic_selection import select_topic_target, verify_topic_target
+from ...topic_selection import _selection_lock, select_topic_target, verify_topic_target
 from ...providers import registry as provider_registry
 from ...session import session_manager
 from ...session_map import session_map_sync
@@ -909,102 +909,106 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
         await safe_edit(query, f"⚠ {message}")
         return WindowLaunchResult(success=False, error_message=message)
 
-    try:
-        still_ready = provider_caps.chat_first_command_path or (
-            await agent_process_started(
-                created_wid,
-                adapter_for(context.bot_data),
-                expected_provider=provider_name,
+    async with _selection_lock(created_wid, owner=captured_owner):
+        try:
+            still_ready = provider_caps.chat_first_command_path or (
+                await agent_process_started(
+                    created_wid,
+                    adapter_for(context.bot_data),
+                    expected_provider=provider_name,
+                )
+                is True
             )
-            is True
-        )
-        current = await verify_topic_target(
-            created_wid,
-            owner=captured_owner,
-            require_marked=config.topic_discovery_mode == "marked",
-        )
-    except BaseException:
-        _mark_provisioning_uncertain(claim_id)
-        if claim_id is not None:
-            topic_orchestration.clear_pending_creation(created_wid)
-        raise
-    if (
-        not still_ready
-        or current is None
-        or (captured_owner is not None and current.topic_mark_owner != captured_owner)
-        or lifecycle_state.is_topic_mark_quarantined(
-            created_wid, owner=current.topic_mark_owner
-        )
-    ):
-        _mark_provisioning_uncertain(claim_id)
-        if claim_id is not None:
-            topic_orchestration.clear_pending_creation(created_wid)
-        message = "Session readiness changed during selection; kept it quarantined for recovery."
-        await safe_edit(query, f"⚠ {message}")
-        return WindowLaunchResult(success=False, error_message=message)
-    if lifecycle_state.is_topic_detach_pending(created_wid, owner=captured_owner):
-        selected = False
-    if not selected:
-        logger.warning("topic_selection_pending_on_create", window_id=created_wid)
+            current = await verify_topic_target(
+                created_wid,
+                owner=captured_owner,
+                require_marked=config.topic_discovery_mode == "marked",
+            )
+        except BaseException:
+            _mark_provisioning_uncertain(claim_id)
+            if claim_id is not None:
+                topic_orchestration.clear_pending_creation(created_wid)
+            raise
         if (
-            config.topic_discovery_mode == "marked"
-            or lifecycle_state.is_topic_detach_pending(
-                created_wid, owner=captured_owner
+            not still_ready
+            or current is None
+            or (
+                captured_owner is not None
+                and current.topic_mark_owner != captured_owner
+            )
+            or lifecycle_state.is_topic_mark_quarantined(
+                created_wid, owner=current.topic_mark_owner
             )
         ):
             _mark_provisioning_uncertain(claim_id)
             if claim_id is not None:
                 topic_orchestration.clear_pending_creation(created_wid)
-            message = "Could not verify topic selection; kept the session quarantined for recovery."
+            message = "Session readiness changed during selection; kept it quarantined for recovery."
             await safe_edit(query, f"⚠ {message}")
             return WindowLaunchResult(success=False, error_message=message)
-
-    captured = lifecycle_state.record_topic_mark_owner(
-        created_wid, current.topic_mark_owner
-    )
-    if not captured and config.topic_discovery_mode == "marked":
-        _mark_provisioning_uncertain(claim_id)
-        topic_orchestration.clear_pending_creation(created_wid)
-        return WindowLaunchResult(
-            success=False, error_message="Selection changed before binding"
-        )
-    session_manager.flush_state()
-    completed = True
-    if claim_id is not None and pending_thread_id is not None:
-        try:
-            committed = thread_router.commit_topic_provisioning(
-                claim_id,
-                window_name=created_wname,
-            )
-            if committed:
-                completed = lifecycle_state.complete_topic_admission(
-                    created_wid, current.topic_mark_owner
+        if lifecycle_state.is_topic_detach_pending(created_wid, owner=captured_owner):
+            selected = False
+        if not selected:
+            logger.warning("topic_selection_pending_on_create", window_id=created_wid)
+            if (
+                config.topic_discovery_mode == "marked"
+                or lifecycle_state.is_topic_detach_pending(
+                    created_wid, owner=captured_owner
                 )
-            session_manager.flush_state()
-        except BaseException:  # noqa: BLE001
-            _mark_provisioning_uncertain(claim_id)
-            topic_orchestration.clear_pending_creation(created_wid)
-            raise
-        if not committed:
-            _mark_provisioning_uncertain(claim_id)
-            topic_orchestration.clear_pending_creation(created_wid)
-            message = "Session could not be bound to this topic"
-            await _abort_topic_creation(query, message, context)
-            return WindowLaunchResult(success=False, error_message=message)
-    elif pending_thread_id is not None:
-        # A malformed callback without an observable chat cannot carry a
-        # durable exact-topic claim; retain the legacy synchronous fallback.
-        thread_router.bind_thread(
-            user_id,
-            pending_thread_id,
-            created_wid,
-            window_name=created_wname,
-            chat_id=chat_id,
-        )
-        completed = lifecycle_state.complete_topic_admission(
+            ):
+                _mark_provisioning_uncertain(claim_id)
+                if claim_id is not None:
+                    topic_orchestration.clear_pending_creation(created_wid)
+                message = "Could not verify topic selection; kept the session quarantined for recovery."
+                await safe_edit(query, f"⚠ {message}")
+                return WindowLaunchResult(success=False, error_message=message)
+
+        captured = lifecycle_state.record_topic_mark_owner(
             created_wid, current.topic_mark_owner
         )
+        if not captured and config.topic_discovery_mode == "marked":
+            _mark_provisioning_uncertain(claim_id)
+            topic_orchestration.clear_pending_creation(created_wid)
+            return WindowLaunchResult(
+                success=False, error_message="Selection changed before binding"
+            )
         session_manager.flush_state()
+        completed = True
+        if claim_id is not None and pending_thread_id is not None:
+            try:
+                committed = thread_router.commit_topic_provisioning(
+                    claim_id,
+                    window_name=created_wname,
+                )
+                if committed:
+                    completed = lifecycle_state.complete_topic_admission(
+                        created_wid, current.topic_mark_owner
+                    )
+                session_manager.flush_state()
+            except BaseException:  # noqa: BLE001
+                _mark_provisioning_uncertain(claim_id)
+                topic_orchestration.clear_pending_creation(created_wid)
+                raise
+            if not committed:
+                _mark_provisioning_uncertain(claim_id)
+                topic_orchestration.clear_pending_creation(created_wid)
+                message = "Session could not be bound to this topic"
+                await _abort_topic_creation(query, message, context)
+                return WindowLaunchResult(success=False, error_message=message)
+        elif pending_thread_id is not None:
+            # A malformed callback without an observable chat cannot carry a
+            # durable exact-topic claim; retain the legacy synchronous fallback.
+            thread_router.bind_thread(
+                user_id,
+                pending_thread_id,
+                created_wid,
+                window_name=created_wname,
+                chat_id=chat_id,
+            )
+            completed = lifecycle_state.complete_topic_admission(
+                created_wid, current.topic_mark_owner
+            )
+            session_manager.flush_state()
 
     if not completed:
         topic_orchestration.clear_pending_creation(created_wid)

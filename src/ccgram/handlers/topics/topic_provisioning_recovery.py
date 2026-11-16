@@ -1,7 +1,8 @@
 """Recover persisted topic creation after its initiating task has stopped."""
 
 from collections import Counter
-from contextlib import suppress
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from functools import partial
 from pathlib import Path
 import time
@@ -11,7 +12,11 @@ from telegram.error import RetryAfter
 
 from ... import window_query
 from ...config import config
-from ...topic_selection import recover_topic_selections, verify_topic_target
+from ...topic_selection import (
+    _selection_lock,
+    recover_topic_selections,
+    verify_topic_target,
+)
 from ...window_state_ports import lifecycle_state
 from ...multiplexer import multiplexer
 from ...multiplexer.base import WindowRef, canonical_window_id
@@ -257,16 +262,17 @@ async def _prepare_selected_recreation(
     router: ThreadRouter, claim: TopicProvisioning, adapter: TelegramSessionAdapter
 ) -> tuple[TopicProvisioning | None, str]:
     """Select the explicit target before taking replacement ownership."""
-    if not await _select_recovered_target(claim, adapter):
-        return None, "unresolved"
-    if not _claim_is_current(router, claim):
-        return None, "changed"
-    assert claim.target_id is not None
-    if lifecycle_state.is_topic_mark_quarantined(
-        claim.target_id, owner=claim.topic_mark_owner
-    ):
-        return None, "unresolved"
-    return _prepare_recreation(router, claim), "changed"
+    async with _select_recovered_target(claim, adapter) as selected:
+        if not selected:
+            return None, "unresolved"
+        if not _claim_is_current(router, claim):
+            return None, "changed"
+        assert claim.target_id is not None
+        if lifecycle_state.is_topic_mark_quarantined(
+            claim.target_id, owner=claim.topic_mark_owner
+        ):
+            return None, "unresolved"
+        return _prepare_recreation(router, claim), "changed"
 
 
 async def _create_prepared_replacement(
@@ -325,19 +331,22 @@ def _recovered_window_admissible(claim: TopicProvisioning, window: WindowRef) ->
     )
 
 
+@asynccontextmanager
 async def _select_recovered_target(
     claim: TopicProvisioning, adapter: TelegramSessionAdapter
-) -> bool:
-    """Recover a live admission, never derive a mark-on from a stale claim."""
+) -> AsyncIterator[bool]:
+    """Recover pending writes before locking verification through the caller's commit."""
     assert claim.target_id is not None
     if not await _claim_agent_is_ready(claim, adapter):
-        return False
+        yield False
+        return
     saved_owner = claim.topic_mark_owner
     window = await verify_topic_target(
         claim.target_id, owner=saved_owner, require_marked=False, mux=multiplexer
     )
     if window is None or not _recovered_window_admissible(claim, window):
-        return False
+        yield False
+        return
     owner = window.topic_mark_owner or saved_owner
     marked_mode = config.topic_discovery_mode == "marked"
     require_selection = marked_mode or claim.kind == "target_for_topic"
@@ -345,7 +354,8 @@ async def _select_recovered_target(
         require_selection
         and lifecycle_state.is_topic_detach_pending(claim.target_id, owner=owner)
     ) or (marked_mode and saved_owner is None and window.topic_markable):
-        return False
+        yield False
+        return
     pending = next(
         (
             operation
@@ -357,24 +367,29 @@ async def _select_recovered_target(
     if pending is not None:
         await recover_topic_selections(mux=multiplexer, operation=pending)
         if marked_mode and lifecycle_state.topic_mark_operation_is_current(pending):
-            return False
+            yield False
+            return
         if not await _claim_agent_is_ready(claim, adapter):
-            return False
-    current = await verify_topic_target(
-        claim.target_id, owner=saved_owner, require_marked=marked_mode, mux=multiplexer
-    )
-    if current is None or not _recovered_window_admissible(claim, current):
-        return False
-    if require_selection and lifecycle_state.is_topic_detach_pending(
-        claim.target_id, owner=current.topic_mark_owner
-    ):
-        return False
-    return (
-        lifecycle_state.record_topic_mark_owner(
-            claim.target_id, current.topic_mark_owner
+            yield False
+            return
+    async with _selection_lock(claim.target_id, owner=owner):
+        current = await verify_topic_target(
+            claim.target_id, owner=owner, require_marked=marked_mode, mux=multiplexer
         )
-        or not marked_mode
-    )
+        if current is None or not _recovered_window_admissible(claim, current):
+            yield False
+            return
+        if require_selection and lifecycle_state.is_topic_detach_pending(
+            claim.target_id, owner=current.topic_mark_owner
+        ):
+            yield False
+            return
+        yield (
+            lifecycle_state.record_topic_mark_owner(
+                claim.target_id, current.topic_mark_owner
+            )
+            or not marked_mode
+        )
 
 
 async def _commit_present_topic(
@@ -387,27 +402,28 @@ async def _commit_present_topic(
             return "changed"
         if _target_bound_in_chat(router, claim):
             return "unresolved"
-        if not await _select_recovered_target(claim, adapter):
-            return "unresolved"
-        if not _claim_is_current(router, claim):
-            return "changed"
-        if _target_bound_in_chat(
-            router, claim
-        ) or lifecycle_state.is_topic_mark_quarantined(
-            claim.target_id, owner=claim.topic_mark_owner
-        ):
-            return "unresolved"
-        committed = router.commit_topic_provisioning(claim.claim_id)
-        completed = not committed or lifecycle_state.complete_topic_admission(
-            claim.target_id, claim.topic_mark_owner
-        )
-        session_manager.flush_state()
-        if not completed:
-            logger.warning(
-                "recovered_topic_lifecycle_unfinished", window_id=claim.target_id
+        async with _select_recovered_target(claim, adapter) as selected:
+            if not selected:
+                return "unresolved"
+            if not _claim_is_current(router, claim):
+                return "changed"
+            if _target_bound_in_chat(
+                router, claim
+            ) or lifecycle_state.is_topic_mark_quarantined(
+                claim.target_id, owner=claim.topic_mark_owner
+            ):
+                return "unresolved"
+            committed = router.commit_topic_provisioning(claim.claim_id)
+            completed = not committed or lifecycle_state.complete_topic_admission(
+                claim.target_id, claim.topic_mark_owner
             )
-            return "unresolved"
-        return "bound" if committed else "changed"
+            session_manager.flush_state()
+            if not completed:
+                logger.warning(
+                    "recovered_topic_lifecycle_unfinished", window_id=claim.target_id
+                )
+                return "unresolved"
+            return "bound" if committed else "changed"
 
 
 async def _recover_present_topic(

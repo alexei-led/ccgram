@@ -1295,3 +1295,38 @@ class TestLaunchWindowFailure:
         mock_safe_send.assert_awaited_once()
         assert "pane is gone" in mock_safe_send.call_args.args[2]
         assert mock_safe_send.call_args.kwargs == {"message_thread_id": 42}
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_completed_unmark_cannot_overtake_launch_admission(
+    monkeypatch, cancelled
+):
+    from _topic_admission_helpers import AdmissionRace
+    from ccgram.config import config
+    from ccgram.thread_router import ThreadRouter
+    from ccgram.window_state_store import get_window_store
+
+    store = get_window_store()
+    router = ThreadRouter(schedule_save=lambda: None, has_window_state=store.has_window)
+    race = AdmissionRace(store, router, 3)
+    monkeypatch.setattr(config, "topic_discovery_mode", "marked")
+    with (
+        _launch_env(),
+        patch("ccgram.multiplexer.multiplexer", race.native),
+        patch(
+            "ccgram.session.session_manager", SimpleNamespace(flush_state=lambda: None)
+        ),
+        patch(f"{_MODULE}thread_router", router),
+    ):
+        result = await race.run(
+            launch_window(_make_query(), _make_context(), _request()),
+            cancelled=cancelled,
+        )
+    if cancelled:
+        assert result is None
+    else:
+        assert result is not None
+        assert result.success
+    assert router.get_window_for_thread(100, 42, -100999) == (
+        None if cancelled else "@5"
+    )

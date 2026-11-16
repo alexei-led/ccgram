@@ -31,7 +31,7 @@ from ...providers import (
 from ...session import session_manager
 from ...session_monitor import NewWindowEvent
 from ...telegram_client import TelegramClient
-from ...topic_selection import verify_topic_target
+from ...topic_selection import _selection_lock, verify_topic_target
 from ...thread_router import TopicProvisioning, thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ...multiplexer.base import WindowRef, canonical_window_id
@@ -1016,29 +1016,30 @@ async def _finish_topic_creation(
     try:
         if thread_id is None:
             return False
-        defer_binding = False
-        if admission is not None:
-            defer_binding = (
-                await _record_automatic_admission(
-                    window_id,
-                    expected_owner=admission.topic_mark_owner,
-                    claim_id=claim_id,
+        async with _selection_lock(window_id, owner=expected_owner):
+            defer_binding = False
+            if admission is not None:
+                defer_binding = (
+                    await _record_automatic_admission(
+                        window_id,
+                        expected_owner=admission.topic_mark_owner,
+                        claim_id=claim_id,
+                    )
+                    is None
                 )
-                is None
+            elif expected_owner is not None or config.topic_discovery_mode == "marked":
+                defer_binding = not await _explicit_owner_is_current(
+                    window_id, expected_owner
+                )
+            return _commit_topic_provisioning(
+                claim_id,
+                chat_id,
+                window_id,
+                topic_name,
+                thread_id,
+                defer_binding=defer_binding,
+                expected_owner=expected_owner,
             )
-        elif expected_owner is not None or config.topic_discovery_mode == "marked":
-            defer_binding = not await _explicit_owner_is_current(
-                window_id, expected_owner
-            )
-        return _commit_topic_provisioning(
-            claim_id,
-            chat_id,
-            window_id,
-            topic_name,
-            thread_id,
-            defer_binding=defer_binding,
-            expected_owner=expected_owner,
-        )
     except BaseException:
         _mark_topic_provisioning_uncertain(claim_id)
         clear_pending_creation(window_id)

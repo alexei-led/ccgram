@@ -18,7 +18,7 @@ from telegram import CallbackQuery, Chat, Update
 from telegram.error import TelegramError
 from ... import window_query
 from ...config import config
-from ...topic_selection import select_topic_target, verify_topic_target
+from ...topic_selection import _selection_lock, select_topic_target, verify_topic_target
 from .topic_orchestration import pending_creation_transaction
 from ...telegram_client import PTBTelegramClient, TelegramClient
 from ...session import session_manager
@@ -322,44 +322,45 @@ async def _select_and_bind(
                 )
                 return False
             logger.warning("topic_selection_pending_on_bind", window_id=selected_wid)
-        current = await verify_topic_target(
-            selected_wid,
-            owner=owner,
-            require_marked=config.topic_discovery_mode == "marked",
-        )
-        if (
-            current is None
-            or lifecycle_state.is_topic_mark_quarantined(
-                selected_wid, owner=current.topic_mark_owner
+        async with _selection_lock(selected_wid, owner=owner):
+            current = await verify_topic_target(
+                selected_wid,
+                owner=owner,
+                require_marked=config.topic_discovery_mode == "marked",
             )
-            or not lifecycle_state.record_topic_mark_owner(
+            if (
+                current is None
+                or lifecycle_state.is_topic_mark_quarantined(
+                    selected_wid, owner=current.topic_mark_owner
+                )
+                or not lifecycle_state.record_topic_mark_owner(
+                    selected_wid, current.topic_mark_owner
+                )
+            ):
+                await query.answer(
+                    "Session changed; refresh the window picker", show_alert=True
+                )
+                return False
+            session_manager.flush_state()
+            thread_router.bind_thread(
+                user_id,
+                thread_id,
+                selected_wid,
+                window_name=window.window_name,
+                chat_id=(
+                    update.callback_query.message.chat.id
+                    if update.callback_query and update.callback_query.message
+                    else None
+                ),
+            )
+            completed = lifecycle_state.complete_topic_admission(
                 selected_wid, current.topic_mark_owner
             )
-        ):
-            await query.answer(
-                "Session changed; refresh the window picker", show_alert=True
-            )
-            return False
-        session_manager.flush_state()
-        thread_router.bind_thread(
-            user_id,
-            thread_id,
-            selected_wid,
-            window_name=window.window_name,
-            chat_id=(
-                update.callback_query.message.chat.id
-                if update.callback_query and update.callback_query.message
-                else None
-            ),
-        )
-        completed = lifecycle_state.complete_topic_admission(
-            selected_wid, current.topic_mark_owner
-        )
-        session_manager.flush_state()
-        if not completed:
-            logger.warning(
-                "topic_admission_lifecycle_unfinished", window_id=selected_wid
-            )
+            session_manager.flush_state()
+            if not completed:
+                logger.warning(
+                    "topic_admission_lifecycle_unfinished", window_id=selected_wid
+                )
     return True
 
 
