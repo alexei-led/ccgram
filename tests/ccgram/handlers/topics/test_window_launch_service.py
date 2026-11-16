@@ -1330,3 +1330,49 @@ async def test_completed_unmark_cannot_overtake_launch_admission(
     assert router.get_window_for_thread(100, 42, -100999) == (
         None if cancelled else "@5"
     )
+
+
+async def test_cancelling_launch_waiting_for_owner_lock_releases_claim(monkeypatch):
+    from _topic_admission_helpers import AdmissionRace
+    from ccgram.config import config
+    from ccgram.thread_router import ThreadRouter
+    from ccgram.topic_selection import _selection_lock
+    from ccgram.window_state_store import get_window_store
+
+    store = get_window_store()
+    router = ThreadRouter(schedule_save=lambda: None, has_window_state=store.has_window)
+    race = AdmissionRace(store, router, 2)
+    monkeypatch.setattr(config, "topic_discovery_mode", "marked")
+    with (
+        _launch_env() as env,
+        patch("ccgram.multiplexer.multiplexer", race.native),
+        patch(
+            "ccgram.session.session_manager", SimpleNamespace(flush_state=lambda: None)
+        ),
+        patch(f"{_MODULE}thread_router", router),
+    ):
+        launch = asyncio.create_task(
+            launch_window(_make_query(), _make_context(), _request())
+        )
+        try:
+            async with asyncio.timeout(3):
+                await race.captured.wait()
+                async with _selection_lock("@5", owner="owner:@5"):
+                    race.release.set()
+                    advanced = asyncio.get_running_loop().create_future()
+                    asyncio.get_running_loop().call_soon(advanced.set_result, None)
+                    await advanced
+                    assert not launch.done()
+                    launch.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await launch
+            (claim,) = router.iter_topic_provisionings()
+            assert claim.uncertain
+            assert not router.owns_topic_provisioning(claim.claim_id)
+            assert router.get_window_for_thread(100, 42, -100999) is None
+            env.orchestration.clear_pending_creation.assert_called_with("@5")
+        finally:
+            race.release.set()
+            if not launch.done():
+                launch.cancel()
+            await asyncio.gather(launch, return_exceptions=True)
