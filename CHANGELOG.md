@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.24.0] - 2026-11-17
+
+### Flag-driven topic lifecycle
+
+- In marked discovery mode, unflagging a markable primary pauses forwarding and closes its Telegram topic without deleting messages or stopping the terminal. Reflagging reopens the same topic without replaying paused transcript output.
+- Persist paused bindings and source-generation-qualified resume frontiers across restarts; transcript rotation cannot leave a stale cutoff suppressing fresh replies. Fence queued retries, tool batches, drafts and live views against pause/resume generations.
+- Recreate a deleted paused topic after reflagging through durable automatic provisioning; never close its running terminal because the paused topic is missing.
+- Add `/sync unflagged`: preview exact paused topics and confirm permanent deletion. Fresh native flag, owner, binding and provisioning checks protect changed or unknown targets. Failed requests require a new preview rather than an unguarded automatic retry.
+
+### Upgrade
+
+After upgrading, restart the bot. **With `CCGRAM_TOPIC_DISCOVERY=marked`, existing unflagged primary topics now pause and close.** Flag the sessions you want to keep forwarding. Closed topics retain their history and remain visible until explicitly deleted. Default `auto` mode and explicitly bound agterm splits are unchanged.
+
+For flag-controlled topics, closing in Telegram no longer clears the native flag; a still-flagged topic reopens. Use `/unbind` and confirm to detach. Deleted Telegram history cannot be recovered by reflagging; a fresh topic is created instead. Already-dispatched requests cannot be recalled.
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.23.0...v4.24.0)
+
 ## [4.23.0] - 2026-11-15
 
 ### Marked-only topic discovery

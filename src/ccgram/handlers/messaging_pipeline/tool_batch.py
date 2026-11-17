@@ -25,6 +25,7 @@ import structlog
 from ...telegram_client import TelegramClient, unwrap_bot
 from ...telegram_draft import DRAFT_UNSET, DraftStream
 from ...thread_router import thread_router
+from .. import topic_pause
 from ...topic_state_registry import topic_state
 from ...window_state_ports.tool_state import get_batch_mode, is_ephemeral_tools
 from .message_task import ContentTask, thread_key
@@ -56,6 +57,7 @@ class ToolBatch:
     total_length: int = 0
     draft: DraftStream | None = None
     last_sent_text: str | None = None
+    topic_revision: str | None = None
 
 
 class ToolEventOutcome(Enum):
@@ -507,6 +509,9 @@ async def process_tool_event(
     bkey = (user_id, thread_id_or_0)
     chat_id = thread_router.resolve_chat_id(user_id, task.thread_id)
     batch = _active_batches.get(bkey)
+    if batch is not None and batch.topic_revision != task.topic_revision:
+        _active_batches.pop(bkey, None)
+        batch = None
 
     if task.content_type == "tool_result":
         batch, followup = await _handle_tool_result(
@@ -558,14 +563,22 @@ async def _handle_tool_use_event(
         batch = None
 
     if not batch:
-        batch = ToolBatch(window_id=window_id, thread_id=thread_id_or_0)
+        batch = ToolBatch(
+            window_id=window_id,
+            thread_id=thread_id_or_0,
+            topic_revision=task.topic_revision,
+        )
         _active_batches[bkey] = batch
 
     ephemeral = is_ephemeral_tools(window_id)
     overflow = _add_tool_use_entry(task, batch, ephemeral=ephemeral)
     if overflow:
         await flush_batch(client, user_id, thread_id_or_0)
-        batch = ToolBatch(window_id=window_id, thread_id=thread_id_or_0)
+        batch = ToolBatch(
+            window_id=window_id,
+            thread_id=thread_id_or_0,
+            topic_revision=task.topic_revision,
+        )
         still_overflow = _add_tool_use_entry(task, batch)
         _active_batches[bkey] = batch
         if still_overflow:
@@ -597,6 +610,11 @@ async def flush_batch(  # noqa: C901, PLR0911
     bkey = (user_id, thread_id_or_0)
     batch = _active_batches.get(bkey)
     if not batch:
+        return
+    if topic_pause.paused(
+        user_id, thread_id_or_0
+    ) or batch.topic_revision != topic_pause.revision(user_id, thread_id_or_0):
+        _active_batches.pop(bkey, None)
         return
     if not batch.entries:
         _active_batches.pop(bkey, None)

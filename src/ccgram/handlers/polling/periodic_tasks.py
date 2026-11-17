@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from ...config import config
+from ..topic_pause import reconcile_topic_pauses
 from ...topic_selection import recover_topic_selections
 from ...telegram_client import TelegramClient
 from ...utils import log_throttle_sweep
@@ -48,6 +49,7 @@ async def run_periodic_tasks(
     adapter: TelegramSessionAdapter,
 ) -> None:
     """Run time-gated periodic tasks (topic check, live view)."""
+    await reconcile_topic_pauses(client, all_windows)
     now = time.monotonic()
 
     if now - timers["live_view"] >= config.live_view_interval:

@@ -29,6 +29,8 @@ import structlog
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 
+from .. import topic_pause
+from ...telegram_client import DeliveryWithdrawnError
 from ...providers import get_provider_for_window
 from ...providers.pi import PI_QUESTION_FOOTER
 from .pi_controls import (
@@ -783,6 +785,26 @@ async def handle_interactive_ui(
     multi-pane windows such as agent teams).  The pane context is shown
     in the message and the keyboard routes responses to that pane.
     """
+    if topic_pause.paused(user_id, thread_id, chat_id):
+        return False
+    try:
+        with topic_pause.guard(user_id, thread_id, chat_id):
+            return await _render_interactive_ui(
+                client, user_id, window_id, thread_id, pane_id, chat_id=chat_id
+            )
+    except DeliveryWithdrawnError:
+        return False
+
+
+async def _render_interactive_ui(
+    client: TelegramClient,
+    user_id: int,
+    window_id: str,
+    thread_id: int | None = None,
+    pane_id: str | None = None,
+    *,
+    chat_id: int | None = None,
+) -> bool:
     captured = await _capture_interactive_content(window_id, pane_id=pane_id)
     if not captured:
         return False

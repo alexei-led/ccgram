@@ -24,6 +24,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.error import RetryAfter, TelegramError
 
 from ...config import config
+from ..topic_pause import paused
 from ...screenshot import text_to_image
 from ...telegram_client import TelegramClient
 from ...multiplexer import multiplexer as tmux_manager
@@ -137,6 +138,8 @@ async def _tick_one_view(
     interval: int,
 ) -> None:
     """Refresh a single live view."""
+    if paused(view.user_id, view.thread_id, view.chat_id):
+        return
     try:
         if now - view.start_time > timeout:
             _active_views.pop(key, None)
@@ -164,6 +167,8 @@ async def _tick_one_view(
         ts = time.strftime("%H:%M:%S")
 
         await rate_limit_send(view.chat_id)
+        if paused(view.user_id, view.thread_id, view.chat_id):
+            return
 
         keyboard = build_live_keyboard(view.window_id, pane_id=view.pane_id)
         await client.edit_message_media(

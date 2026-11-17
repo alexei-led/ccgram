@@ -669,7 +669,29 @@ With the bot running, mutation uses the matching state/backend/native-endpoint d
 
 Selection uses a window-local native option in tmux, an owned ON/OFF manual-label suffix in standard Herdr, and the primary session flag in agterm. Herdr retains a visible OFF owner suffix after unmarking so restoration and reselection keep the same owner. Agterm splits remain explicitly bindable without marking the primary. Ordinary Herdr names do not mark a terminal; copying a layout can copy explicit marker state, so fresh-worker templates must omit it. See [native storage and restoration limits](design/marked-topic-discovery.md#native-storage-and-restoration).
 
-Unmarking leaves bound topics connected. Marked-mode last-topic close or `/unbind` clears selection without killing the terminal, and deliberate detach is exempt from orphan TTL. If unmarking withdraws an unfinished explicit creation, CCGram retains its exact uncertain claim unbound and does not delete a possibly human-used topic. With no armed attempt, reselecting the native target permits creation recovery. Reselection does not clear dispatch uncertainty. See [lifecycle details](design/marked-topic-discovery.md#unfinished-or-ambiguous-detach).
+In marked mode, the native flag controls both discovery and existing markable primary topics:
+
+| Native action | Telegram result |
+| --- | --- |
+| Mark / flag | Create a topic, or reopen the same paused topic |
+| Unmark / unflag | Stop forwarding and close the topic; retain its history and terminal session |
+| Reflag after deleting a paused topic | Create a fresh topic; deleted history cannot be restored |
+
+In agterm, use the session flag in the UI; tint/color is not selection. Splits remain explicitly bindable and do not follow the primary flag. In `auto` mode, unmarking still leaves existing topics connected.
+
+Pause state and exact user/chat/topic/target/owner mappings survive bot restarts. The resume cutoff is tied to the source epoch and inode, so transcript replacement or truncation cannot suppress fresh replies. Resuming starts at the current transcript EOF: output produced while paused is not replayed, and the raw transcript is unchanged. Requests already dispatched to Telegram cannot be recalled. Native metadata that is unknown or unavailable does not authorize a new pause, resume, or deletion.
+
+Closing a flag-controlled topic in Telegram does not clear the native flag: if still flagged, it reopens. Use `/unbind` and confirm when you want an explicit detach. This clears selection without killing the terminal, and deliberate detach is exempt from orphan TTL.
+
+#### Delete unflagged topics
+
+Run `/sync unflagged` in the Topics group to preview your paused topics. Each preview lists up to 20 topic IDs and names; repeat for the remaining topics. **Delete listed topics** permanently deletes those topics and all their Telegram messages; running terminal sessions are kept. Confirmations expire after five minutes and after a bot restart. Re-run the command after a failure; failed deletions are not placed in the ordinary automatic retry queue.
+
+Immediately before each deletion, CCGram checks that the exact paused binding and native owner still match and that selection is affirmatively off. Reflagged/rebound targets, General, unfinished creation, uncertain native writes, splits, and unavailable metadata are protected. A local deletion claim blocks rebinding during the request. Native flag changes and Telegram deletion are not one atomic transaction: a flag change after the final check cannot recall an already dispatched delete.
+
+Closed topics remain visible until deleted. `/sync` without arguments retains its existing dead-session cleanup behavior.
+
+If unmarking withdraws an unfinished explicit creation, CCGram retains its exact uncertain claim unbound and does not delete a possibly human-used topic. With no armed attempt, reselecting the native target permits creation recovery. Reselection does not clear dispatch uncertainty. See [lifecycle details](design/marked-topic-discovery.md#unfinished-or-ambiguous-detach).
 
 #### Native-write quarantine and recovery
 

@@ -117,6 +117,8 @@ _SINGLETON_ALLOWLIST = frozenset(
         "status/status_bar_actions.py",
         "status/status_bubble.py",
         "status/topic_emoji.py",
+        # Flag-driven lifecycle owns pause/provisioning transitions and strict checkpoints.
+        "topic_pause.py",
         "sync_command.py",
         "text/text_handler.py",
         "toolbar/toolbar_callbacks.py",

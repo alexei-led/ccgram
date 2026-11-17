@@ -264,6 +264,8 @@ class TranscriptBatch:
     tool_names: tuple[tuple[str, str], ...] = ()
     tool_summaries: tuple[tuple[str, str], ...] = ()
     tool_diffs: tuple[tuple[str, dict[str, Any]], ...] = ()
+    source_generation: int | None = None
+    source_identity: tuple[int, int] | None = None
 
 
 def _codex(entry: SourceEntry, state: _CodexState) -> TranscriptRecord | None:

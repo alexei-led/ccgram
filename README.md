@@ -77,7 +77,7 @@ Telegram shares its native slash-command suggestions across topics. CCGram keeps
 
 ## Topic Discovery
 
-Automatic discovery remains the default. Set `CCGRAM_TOPIC_DISCOVERY=marked` to create automatic Telegram topics only for explicitly selected tmux windows, Herdr terminals, or agterm primary sessions. Use `ccgram topic status` to get exact target IDs, then `ccgram topic mark TARGET` or `ccgram topic unmark TARGET`. Unmarking keeps existing bound topics connected. See the [operator guide](docs/guides.md#marked-only-discovery) and [native storage and limits](docs/design/marked-topic-discovery.md).
+Automatic discovery remains the default. Set `CCGRAM_TOPIC_DISCOVERY=marked` to create automatic Telegram topics only for explicitly selected tmux windows, Herdr terminals, or agterm primary sessions. Use `ccgram topic status` to get exact target IDs, then `ccgram topic mark TARGET` or `ccgram topic unmark TARGET`. In marked mode, unmarking pauses forwarding and closes the topic without deleting history or stopping the terminal; re-marking resumes it. Use `/sync unflagged` to preview and confirm permanent deletion of paused topics. See the [operator guide](docs/guides.md#marked-only-discovery) and [native storage and limits](docs/design/marked-topic-discovery.md).
 
 ## Provider Switching
 
