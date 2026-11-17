@@ -186,6 +186,22 @@ class SessionMonitor:
     def _pending_tools(self) -> dict:
         return self._transcript_reader._pending_tools
 
+    def capture_transcript_generation(self, session_id: str) -> int:
+        """Persist source identity before a consumer records an epoch-qualified cutoff."""
+        tracked = self.state.get_session(session_id)
+        if tracked is None:
+            return 0
+        if tracked.source_identity is None:
+            identity = self._transcript_reader.source_identity(session_id)
+            if identity is None:
+                stat = Path(tracked.file_path).stat()
+                identity = stat.st_dev, stat.st_ino
+            tracked.source_identity = identity
+            self.state.update_session(tracked)
+        if not self.state.save_if_dirty():
+            raise OSError("Cannot persist transcript source identity")
+        return tracked.source_generation
+
     def get_last_activity(self, session_id: str) -> float | None:
         """Get monotonic timestamp of last transcript activity for a session."""
         return self._idle_tracker.get_last_activity(session_id)
@@ -1217,3 +1233,11 @@ def clear_active_monitor() -> None:
 def get_active_monitor() -> SessionMonitor | None:
     """Return the active SessionMonitor instance."""
     return _active_monitor
+
+
+def capture_transcript_generation(session_id: str) -> int:
+    """Checkpoint the source owner before a consumer stores an epoch-qualified cutoff."""
+    monitor = get_active_monitor()
+    return (
+        monitor.capture_transcript_generation(session_id) if monitor is not None else 0
+    )

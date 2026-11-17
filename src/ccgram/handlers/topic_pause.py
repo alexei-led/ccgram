@@ -17,6 +17,7 @@ from ..config import config
 from ..multiplexer import multiplexer
 from ..multiplexer.base import Multiplexer, WindowRef, canonical_window_id
 from ..session_query import resolve_session_for_window
+from ..session_monitor import capture_transcript_generation
 from ..telegram_client import TelegramClient, delivery_guard
 from ..telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS, retry_after_seconds
 from ..thread_router import ThreadRouter, TopicPause, thread_router
@@ -88,16 +89,25 @@ def accepts_message(
     chat_id: int | None,
     session_id: str,
     source_offset: int | None,
+    source_generation: int | None = None,
+    source_identity: tuple[int, int] | None = None,
 ) -> bool:
     state = thread_router.get_topic_pause(user_id, thread_id, chat_id)
-    return state is None or (
-        not state.paused
-        and (
-            state.session_id != session_id
-            or source_offset is None
-            or source_offset >= state.offset
-        )
-    )
+    if state is None:
+        return True
+    if state.paused:
+        return False
+    if state.session_id != session_id:
+        return True
+    if source_generation is not None:
+        if source_generation != state.source_generation:
+            return source_generation > state.source_generation
+        if (
+            state.source_identity is not None
+            and source_identity != state.source_identity
+        ):
+            return False
+    return source_offset is None or source_offset >= state.offset
 
 
 def _current(router: ThreadRouter, state: TopicPause) -> bool:
@@ -134,8 +144,14 @@ async def _frontier(state: TopicPause) -> TopicPause:
     session = await resolve_session_for_window(state.window_id)
     if session is None or not session.file_path:
         return replace(state, session_id=None, offset=0)
-    size = Path(session.file_path).stat().st_size
-    return replace(state, session_id=session.session_id, offset=size)
+    stat = Path(session.file_path).stat()
+    return replace(
+        state,
+        session_id=session.session_id,
+        offset=stat.st_size,
+        source_generation=capture_transcript_generation(session.session_id),
+        source_identity=(stat.st_dev, stat.st_ino),
+    )
 
 
 def note_missing(user_id: int, chat_id: int | None, thread_id: int) -> bool:
@@ -258,6 +274,9 @@ async def _resume(
     if state.missing:
         _prepare_replacement(frontier, router, flush)
         return
+    # An in-flight reopen may succeed even if its acknowledgement is lost.
+    # Fence forwarding, but do not retain a claim that the topic is closed.
+    frontier = replace(frontier, closed=False)
     router.set_topic_pause(frontier)
     flush()
     state = frontier

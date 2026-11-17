@@ -145,6 +145,9 @@ def render_protocol_records(
     provider_name: str,
     records: tuple[tuple[SourceEntry, TranscriptRecord], ...],
     state: TranscriptParserState,
+    *,
+    source_generation: int | None = None,
+    source_identity: tuple[int, int] | None = None,
 ) -> list[NewMessage]:
     """Render canonical protocol records into Telegram monitor events."""
     rendered: list[NewMessage] = []
@@ -213,6 +216,8 @@ def render_protocol_records(
                             role=role,
                             provider_name=provider_name,
                             source_offset=source.offset,
+                            source_generation=source_generation,
+                            source_identity=source_identity,
                         )
                     )
                 rendered.append(
@@ -227,6 +232,8 @@ def render_protocol_records(
                         tool_name=tool_name if isinstance(tool_name, str) else None,
                         provider_name=provider_name,
                         source_offset=source.offset,
+                        source_generation=source_generation,
+                        source_identity=source_identity,
                     )
                 )
 
@@ -253,6 +260,8 @@ def render_protocol_records(
                         tool_name=tool_aliases.get(raw_name or "", raw_name),
                         provider_name=provider_name,
                         source_offset=source.offset,
+                        source_generation=source_generation,
+                        source_identity=source_identity,
                     )
                 )
 
@@ -278,7 +287,12 @@ def render_transcript_batch(batch: TranscriptBatch) -> tuple[NewMessage, ...]:
     )
     return tuple(
         render_protocol_records(
-            batch.session_id, batch.provider_name, batch.records, state
+            batch.session_id,
+            batch.provider_name,
+            batch.records,
+            state,
+            source_generation=batch.source_generation,
+            source_identity=batch.source_identity,
         )
     )
 
@@ -475,6 +489,9 @@ class TranscriptReader:
         # written after it either.
         self._startup_clamped: dict[str, int] = {}
 
+    def source_identity(self, session_id: str) -> tuple[int, int] | None:
+        return self._file_generations.get(session_id)
+
     def _snapshot_file_ctimes(self) -> dict[str, int]:
         ctimes: dict[str, int] = {}
         for session_id, tracked in self._state.tracked_sessions.items():
@@ -496,6 +513,9 @@ class TranscriptReader:
     def _snapshot_file_generations(self) -> dict[str, tuple[int, int]]:
         generations: dict[str, tuple[int, int]] = {}
         for session_id, tracked in self._state.tracked_sessions.items():
+            if tracked.source_identity is not None:
+                generations[session_id] = tracked.source_identity
+                continue
             try:
                 st = Path(tracked.file_path).stat()
             except OSError:
@@ -747,6 +767,15 @@ class TranscriptReader:
         self._rollback_read(session_id, tracked, start_cursor)
         return None
 
+    def _rotate_source_generation(self, tracked: TrackedSession) -> None:
+        previous = tracked.source_generation
+        tracked.source_generation += 1
+        self._state.update_session(tracked)
+        if not self._state.save_if_dirty():
+            tracked.source_generation = previous
+            self._state.update_session(tracked)
+            raise OSError("Cannot persist transcript generation")
+
     async def _commit_stable_read(
         self,
         session_id: str,
@@ -777,6 +806,7 @@ class TranscriptReader:
             self._log_read_abandoned(session_id)
             self._rollback_read(session_id, tracked, stable_read.start_cursor)
             return False
+        tracked.source_identity = (stable_stat.st_dev, stable_stat.st_ino)
         self._file_prefixes[session_id] = prefix
         self._file_mtimes[session_id] = stable_stat.st_mtime
         self._file_generations[session_id] = (
@@ -1222,6 +1252,8 @@ class TranscriptReader:
         ):
             return
         new_entries, _, reset_during_read, _ = stable_read
+        if generation_changed or reset_during_read:
+            self._rotate_source_generation(tracked)
         committed = await self._commit_stable_read(
             session_id,
             tracked,
@@ -1301,6 +1333,8 @@ class TranscriptReader:
             new_messages,
             byte_checkpoint=self._parse_pos(tracked),
             emit_checkpoint_if_empty=generation_changed or reset_during_read,
+            source_generation=tracked.source_generation,
+            source_identity=tracked.source_identity,
         )
         self._state.update_session(tracked)
 
@@ -1315,6 +1349,8 @@ class TranscriptReader:
         *,
         byte_checkpoint: int = 0,
         emit_checkpoint_if_empty: bool = False,
+        source_generation: int | None = None,
+        source_identity: tuple[int, int] | None = None,
     ) -> None:
         if window_id and not identity_state.accepts_provider_observation(
             window_id, provider.capabilities.name
@@ -1328,6 +1364,8 @@ class TranscriptReader:
                         provider_name=provider.capabilities.name,
                         records=(),
                         byte_checkpoint=byte_checkpoint,
+                        source_generation=source_generation,
+                        source_identity=source_identity,
                     )
                 )
             return
@@ -1367,6 +1405,8 @@ class TranscriptReader:
             provider_name=provider_name,
             records=records,
             byte_checkpoint=byte_checkpoint,
+            source_generation=source_generation,
+            source_identity=source_identity,
             tool_names=tuple(sorted(state.tool_names.items())),
             tool_summaries=tuple(sorted(state.tool_summaries.items())),
             tool_diffs=tuple(sorted(state.tool_diffs.items())),

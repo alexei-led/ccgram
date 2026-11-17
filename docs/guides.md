@@ -679,7 +679,7 @@ In marked mode, the native flag controls both discovery and existing markable pr
 
 In agterm, use the session flag in the UI; tint/color is not selection. Splits remain explicitly bindable and do not follow the primary flag. In `auto` mode, unmarking still leaves existing topics connected.
 
-Pause state and exact user/chat/topic/target/owner mappings survive bot restarts. Resuming starts at the current transcript EOF: output produced while paused is not replayed, and the raw transcript is unchanged. Requests already dispatched to Telegram cannot be recalled. Native metadata that is unknown or unavailable does not authorize a new pause, resume, or deletion.
+Pause state and exact user/chat/topic/target/owner mappings survive bot restarts. The resume cutoff is tied to the source epoch and inode, so transcript replacement or truncation cannot suppress fresh replies. Resuming starts at the current transcript EOF: output produced while paused is not replayed, and the raw transcript is unchanged. Requests already dispatched to Telegram cannot be recalled. Native metadata that is unknown or unavailable does not authorize a new pause, resume, or deletion.
 
 Closing a flag-controlled topic in Telegram does not clear the native flag: if still flagged, it reopens. Use `/unbind` and confirm when you want an explicit detach. This clears selection without killing the terminal, and deliberate detach is exempt from orphan TTL.
 

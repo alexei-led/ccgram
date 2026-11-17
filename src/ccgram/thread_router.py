@@ -65,14 +65,23 @@ class TopicPause:
     offset: int = 0
     revision: str = ""
     retry_at: float = 0.0
+    source_generation: int = 0
+    source_identity: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         if (
             any(
                 type(value) is not int
-                for value in (self.user_id, self.chat_id, self.thread_id, self.offset)
+                for value in (
+                    self.user_id,
+                    self.chat_id,
+                    self.thread_id,
+                    self.offset,
+                    self.source_generation,
+                )
             )
             or self.offset < 0
+            or self.source_generation < 0
         ):
             raise ValueError("Invalid topic pause identity or frontier")
         if any(
@@ -96,6 +105,11 @@ class TopicPause:
             or self.retry_at < 0
         ):
             raise ValueError("Invalid topic pause retry time")
+        if self.source_identity is not None:
+            device, inode = self.source_identity
+            if type(device) is not int or type(inode) is not int:
+                raise ValueError("Invalid topic pause source identity")
+            object.__setattr__(self, "source_identity", tuple(self.source_identity))
         if not isinstance(self.revision, str):
             raise ValueError("Invalid topic pause revision")
 

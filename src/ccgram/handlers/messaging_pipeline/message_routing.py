@@ -202,7 +202,13 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
 
     for user_id, window_id, thread_id, chat_id in active_users:
         if not topic_pause.accepts_message(
-            user_id, thread_id, chat_id, msg.session_id, msg.source_offset
+            user_id,
+            thread_id,
+            chat_id,
+            msg.session_id,
+            msg.source_offset,
+            msg.source_generation,
+            msg.source_identity,
         ):
             continue
         structlog.contextvars.clear_contextvars()
@@ -242,7 +248,13 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
                 )
             await asyncio.sleep(0.3)
             if not topic_pause.accepts_message(
-                user_id, thread_id, chat_id, msg.session_id, msg.source_offset
+                user_id,
+                thread_id,
+                chat_id,
+                msg.session_id,
+                msg.source_offset,
+                msg.source_generation,
+                msg.source_identity,
             ):
                 continue
             try:

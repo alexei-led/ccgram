@@ -542,3 +542,136 @@ async def test_paused_interactive_ui_skips_terminal_capture(env, monkeypatch):
         env.client, 1, "session", 10, chat_id=-100
     )
     capture.assert_not_called()
+
+
+@pytest.mark.parametrize("result", ["success", "timeout"])
+async def test_unflag_during_reopen_is_closed_on_next_reconciliation(env, result):
+    await reconcile(env)
+
+    def reopen(**kwargs):
+        env.backend.find_window_by_id.return_value = env.window
+        if result == "timeout":
+            from telegram.error import TimedOut
+
+            raise TimedOut("reopen acknowledgement lost")
+        return True
+
+    env.client.returns["reopen_forum_topic"] = reopen
+    await reconcile(env, replace(env.window, topic_marked=True))
+    assert topic_pause.paused(1, 10, -100)
+    await reconcile(env)
+    assert env.client.call_count("close_forum_topic") == 2
+
+
+@pytest.mark.parametrize("replacement", ["replace", "truncate"])
+@pytest.mark.parametrize("restart", ["none", "before_rotation", "after_rotation"])
+async def test_fresh_replies_after_same_session_transcript_replacement_are_delivered(
+    env, tmp_path, monkeypatch, replacement, restart
+):
+    import json
+    from ccgram.monitor_state import MonitorState, TrackedSession
+    from ccgram import session_monitor
+    from ccgram.session_monitor import SessionMonitor
+
+    def record(text):
+        return (
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": text}]},
+                }
+            )
+            + "\n"
+        )
+
+    path = tmp_path / "transcript.jsonl"
+    path.write_text(record("paused" * 1000))
+    state = MonitorState(tmp_path / "monitor.json")
+    state.update_session(TrackedSession("conversation", str(path), path.stat().st_size))
+    state.save()
+    monitor = SessionMonitor(state_file=state.state_file)
+    monkeypatch.setattr(session_monitor, "_active_monitor", monitor)
+    reader = monitor._transcript_reader
+    await reader._process_session_file("conversation", path, [])
+    monkeypatch.setattr(
+        topic_pause,
+        "resolve_session_for_window",
+        AsyncMock(
+            return_value=SimpleNamespace(session_id="conversation", file_path=path)
+        ),
+    )
+    await reconcile(env)
+    await reconcile(env, replace(env.window, topic_marked=True))
+    restored = ThreadRouter(schedule_save=lambda: None, has_window_state=lambda _: True)
+    restored.from_dict(json.loads(json.dumps(env.router.to_dict())))
+    env.router = restored
+    monkeypatch.setattr(topic_pause, "thread_router", restored)
+    if replacement == "replace":
+        other = tmp_path / "replacement.jsonl"
+        other.write_text(record("old history"))
+        other.replace(path)
+    else:
+        path.write_text(record("old history"))
+    if restart == "before_rotation":
+        monitor = SessionMonitor(state_file=state.state_file)
+        monkeypatch.setattr(session_monitor, "_active_monitor", monitor)
+        reader = monitor._transcript_reader
+    replaced = []
+    await reader._process_session_file("conversation", path, replaced)
+    assert replaced == []
+    monitor.state.commit_parsed_offsets({"conversation"})
+    monitor.state.save_if_dirty()
+    if restart == "after_rotation":
+        monitor = SessionMonitor(state_file=state.state_file)
+        monkeypatch.setattr(session_monitor, "_active_monitor", monitor)
+        reader = monitor._transcript_reader
+    with path.open("a") as stream:
+        stream.write(record("fresh reply"))
+    messages = []
+    await reader._process_session_file("conversation", path, messages)
+    assert [message.text for message in messages] == ["fresh reply"]
+    (fresh,) = messages
+    assert topic_pause.accepts_message(
+        1,
+        10,
+        -100,
+        fresh.session_id,
+        fresh.source_offset,
+        fresh.source_generation,
+        fresh.source_identity,
+    )
+
+
+async def test_generation_frontier_rejects_older_buffered_records(env):
+    await reconcile(env)
+    await reconcile(env, replace(env.window, topic_marked=True))
+    state = env.router.get_topic_pause(1, 10, -100)
+    assert state is not None
+    env.router.set_topic_pause(
+        replace(
+            state,
+            session_id="conversation",
+            source_generation=2,
+            source_identity=(1, 2),
+            offset=100,
+        )
+    )
+    assert not topic_pause.accepts_message(1, 10, -100, "conversation", 200, 1, (1, 2))
+    assert not topic_pause.accepts_message(1, 10, -100, "conversation", 50, 2, (1, 2))
+    assert not topic_pause.accepts_message(1, 10, -100, "conversation", 200, 2, (1, 3))
+    assert topic_pause.accepts_message(1, 10, -100, "conversation", 20, 3, (1, 3))
+
+
+def test_source_epoch_cannot_advance_when_checkpoint_fails(tmp_path, monkeypatch):
+    from ccgram.monitor_state import MonitorState, TrackedSession
+    from ccgram.transcript_reader import TranscriptReader
+    from ccgram.idle_tracker import IdleTracker
+
+    state = MonitorState(tmp_path / "monitor.json")
+    tracked = TrackedSession("conversation", str(tmp_path / "missing"))
+    state.update_session(tracked)
+    reader = TranscriptReader(state, IdleTracker())
+    monkeypatch.setattr(state, "save", lambda: False)
+    with pytest.raises(OSError, match="persist transcript generation"):
+        reader._rotate_source_generation(tracked)
+    assert tracked.source_generation == 0

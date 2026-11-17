@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Flag-driven topic lifecycle
 
 - In marked discovery mode, unflagging a markable primary pauses forwarding and closes its Telegram topic without deleting messages or stopping the terminal. Reflagging reopens the same topic without replaying paused transcript output.
-- Persist paused bindings and source-specific resume frontiers across restarts. Fence queued retries, tool batches, drafts and live views against pause/resume generations.
+- Persist paused bindings and source-generation-qualified resume frontiers across restarts; transcript rotation cannot leave a stale cutoff suppressing fresh replies. Fence queued retries, tool batches, drafts and live views against pause/resume generations.
 - Recreate a deleted paused topic after reflagging through durable automatic provisioning; never close its running terminal because the paused topic is missing.
 - Add `/sync unflagged`: preview exact paused topics and confirm permanent deletion. Fresh native flag, owner, binding and provisioning checks protect changed or unknown targets. Failed requests require a new preview rather than an unguarded automatic retry.
 
