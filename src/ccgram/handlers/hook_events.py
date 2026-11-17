@@ -12,6 +12,8 @@ import asyncio
 
 import structlog
 
+from . import topic_pause
+from ..telegram_client import DeliveryWithdrawnError
 from ..claude_task_state import classify_wait_message, claude_task_state
 from ..providers.base import HookEvent
 from ..session_lifecycle import session_lifecycle
@@ -336,9 +338,15 @@ async def _handle_stop_failure(event: HookEvent, client: TelegramClient) -> None
 
     for user_id, thread_id, _window_id in users:
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
-        await rate_limit_send_message(
-            client, chat_id, text, message_thread_id=thread_id
-        )
+        if topic_pause.paused(user_id, thread_id, chat_id):
+            continue
+        try:
+            with topic_pause.guard(user_id, thread_id, chat_id):
+                await rate_limit_send_message(
+                    client, chat_id, text, message_thread_id=thread_id
+                )
+        except DeliveryWithdrawnError:
+            continue
 
 
 async def _handle_session_end(event: HookEvent, client: TelegramClient) -> None:

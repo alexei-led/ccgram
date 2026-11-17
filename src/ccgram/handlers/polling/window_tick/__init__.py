@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ... import topic_pause
 from ....telegram_client import PTBTelegramClient
 from ....session_protocol.telegram import TelegramSessionAdapter
 from ....session_query import resolve_chat_id
@@ -84,6 +85,9 @@ async def tick_window(
         await _handle_dead_window_notification(
             bot, user_id, thread_id, window_id, runtime=rt
         )
+        return
+
+    if topic_pause.paused(user_id, thread_id, resolve_chat_id(user_id, thread_id)):
         return
 
     agent_exited = await discover_and_register_transcript(

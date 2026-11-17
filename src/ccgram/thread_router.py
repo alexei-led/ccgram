@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 import math
 import structlog
 import time
@@ -49,6 +49,59 @@ TopicProvisioningKind = Literal[
     "target_for_topic",
     "replacement",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class TopicPause:
+    user_id: int
+    chat_id: int
+    thread_id: int
+    window_id: str
+    owner: str
+    paused: bool = True
+    closed: bool = False
+    missing: bool = False
+    session_id: str | None = None
+    offset: int = 0
+    revision: str = ""
+    retry_at: float = 0.0
+
+    def __post_init__(self) -> None:
+        if (
+            any(
+                type(value) is not int
+                for value in (self.user_id, self.chat_id, self.thread_id, self.offset)
+            )
+            or self.offset < 0
+        ):
+            raise ValueError("Invalid topic pause identity or frontier")
+        if any(
+            type(value) is not bool
+            for value in (self.paused, self.closed, self.missing)
+        ):
+            raise ValueError("Invalid topic pause state")
+        if (
+            not self.owner
+            or not isinstance(self.owner, str)
+            or not self.window_id
+            or not isinstance(self.window_id, str)
+        ):
+            raise ValueError("Topic pause requires a native owner and target")
+        if self.session_id is not None and not isinstance(self.session_id, str):
+            raise ValueError("Invalid topic pause source")
+        if (
+            isinstance(self.retry_at, bool)
+            or not isinstance(self.retry_at, (int, float))
+            or not math.isfinite(self.retry_at)
+            or self.retry_at < 0
+        ):
+            raise ValueError("Invalid topic pause retry time")
+        if not isinstance(self.revision, str):
+            raise ValueError("Invalid topic pause revision")
+
+    @property
+    def key(self) -> tuple[int, int, int]:
+        return self.user_id, self.chat_id, self.thread_id
 
 
 @dataclass(frozen=True)
@@ -148,6 +201,7 @@ class ThreadRouter:
         # Reverse index: (user_id, window_id) -> thread_id for O(1) lookups
         self._window_to_thread: dict[tuple[int, str], int] = {}
         self._chat_window_to_thread: dict[tuple[int, int, str], int] = {}
+        self.topic_pauses: dict[tuple[int, int, int], TopicPause] = {}
         self._retired_topics: list[RetiredTopic] = []
         self._topic_deletion_claims: set[tuple[int, int]] = set()
         self._topic_deletion_targets: dict[tuple[int, int], str | None] = {}
@@ -170,6 +224,7 @@ class ThreadRouter:
         self.pinned_display_names.clear()
         self._window_to_thread.clear()
         self._chat_window_to_thread.clear()
+        self.topic_pauses.clear()
         self._retired_topics.clear()
         self._topic_deletion_claims.clear()
         self._topic_deletion_targets.clear()
@@ -297,6 +352,7 @@ class ThreadRouter:
                 for (uid, chat_id, tid), wid in self.chat_thread_bindings.items()
             },
             "private_topic_chats": sorted(self.private_topic_chats),
+            "topic_pauses": [asdict(pause) for pause in self.topic_pauses.values()],
             "window_display_names": self.window_display_names,
             "pinned_display_names": sorted(self.pinned_display_names),
             "retired_topics": [
@@ -391,6 +447,17 @@ class ThreadRouter:
         elif raw_provisioning:
             repaired = True
         self._rebuild_reverse_index()
+        self.topic_pauses = {}
+        for row in data.get("topic_pauses", []):
+            pause = TopicPause(**row)
+            if (
+                pause.missing
+                or self.get_window_for_thread(
+                    pause.user_id, pause.thread_id, pause.chat_id
+                )
+                == pause.window_id
+            ):
+                self.topic_pauses[pause.key] = pause
         for (
             _user_id,
             chat_id,
@@ -1141,7 +1208,21 @@ class ThreadRouter:
         )
         return True
 
-    def end_topic_deletion(self, topic: RetiredTopic) -> None:
+    def begin_paused_topic_deletion(self, pause: TopicPause) -> bool:
+        key = pause.chat_id, pause.thread_id
+        if (
+            key in self._topic_deletion_claims
+            or self.topic_pauses.get(pause.key) != pause
+            or not pause.paused
+            or self.has_topic_provisioning(*key)
+            or self.has_target_provisioning(pause.window_id)
+        ):
+            return False
+        self._topic_deletion_claims.add(key)
+        self._topic_deletion_targets[key] = canonical_window_id(pause.window_id)
+        return True
+
+    def end_topic_deletion(self, topic: RetiredTopic | TopicPause) -> None:
         """Release an in-flight deletion claim for a retired topic."""
         key = (topic.chat_id, topic.thread_id)
         self._topic_deletion_claims.discard(key)
@@ -1324,9 +1405,36 @@ class ThreadRouter:
             self._window_to_thread[(user_id, window_id)] = thread_id
         if window_name and window_id not in self.pinned_display_names:
             self.window_display_names[window_id] = window_name
+        self._move_topic_pause(user_id, chat_id, thread_id, window_id)
         self._restore_active_topic(chat_id, thread_id)
         if schedule_save:
             self._schedule_save()
+
+    def _move_topic_pause(
+        self, user_id: int, chat_id: int | None, thread_id: int, window_id: str
+    ) -> None:
+        if chat_id is None:
+            return
+        existing = self.topic_pauses.get((user_id, chat_id, thread_id))
+        if existing is not None and existing.window_id == window_id:
+            return
+        self.topic_pauses.pop((user_id, chat_id, thread_id), None)
+        for key, pause in list(self.topic_pauses.items()):
+            if (
+                pause.user_id == user_id
+                and pause.chat_id == chat_id
+                and pause.window_id == window_id
+            ):
+                self.topic_pauses.pop(key)
+                self.topic_pauses[(user_id, chat_id, thread_id)] = replace(
+                    pause, thread_id=thread_id, missing=False, closed=False
+                )
+
+    def _forget_topic_pause(
+        self, user_id: int, chat_id: int | None, thread_id: int
+    ) -> None:
+        if chat_id is not None:
+            self.topic_pauses.pop((user_id, chat_id, thread_id), None)
 
     def bind_thread(
         self,
@@ -1403,6 +1511,7 @@ class ThreadRouter:
             user_id,
         )
 
+        self._forget_topic_pause(user_id, known_chat_id, thread_id)
         self._retire_topic(
             user_id,
             known_chat_id,
@@ -1430,6 +1539,24 @@ class ThreadRouter:
 
         self._schedule_save()
         return window_id
+
+    def set_topic_pause(self, pause: TopicPause) -> None:
+        if (
+            self.get_window_for_thread(pause.user_id, pause.thread_id, pause.chat_id)
+            != pause.window_id
+        ):
+            raise ValueError("Paused topic binding changed")
+        self.topic_pauses[pause.key] = pause
+        self._schedule_save()
+
+    def get_topic_pause(
+        self, user_id: int, thread_id: int | None, chat_id: int | None = None
+    ) -> TopicPause | None:
+        if thread_id is None:
+            return None
+        if chat_id is None:
+            chat_id = self.resolve_chat_id(user_id, thread_id)
+        return self.topic_pauses.get((user_id, chat_id, thread_id))
 
     def get_window_for_thread(
         self, user_id: int, thread_id: int, chat_id: int | None = None

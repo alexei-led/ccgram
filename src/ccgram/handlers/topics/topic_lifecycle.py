@@ -25,6 +25,7 @@ from ...multiplexer.base import canonical_window_id
 from ...utils import log_throttled
 from ...window_state_ports import legacy_state, lifecycle_state
 from ...topic_selection import detach_topic_target
+from .. import topic_pause
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ..callback_tokens import revoke_window_tokens
 from ..cleanup import clear_topic_state
@@ -90,6 +91,7 @@ async def check_unbound_window_ttl(
         view = window_query.view_window(w.window_id)
         if (
             view is None
+            or topic_pause.has_paused_target(w.window_id)
             or view.origin != CCGRAM_CREATED_WINDOW_ORIGIN
             or (
                 config.topic_discovery_mode == "marked"
@@ -251,6 +253,8 @@ async def _unbind_deleted_topic(
     adapter: TelegramSessionAdapter,
 ) -> None:
     """Tear down a window whose Telegram topic no longer exists."""
+    if topic_pause.note_missing(user_id, chat_id, thread_id):
+        return
     w = await tmux_manager.find_window_by_id(wid)
     view = window_query.view_window(wid)
     killed = False
@@ -371,6 +375,8 @@ async def topic_closed_handler(
         else thread_router.get_window_for_thread(user.id, thread_id)
     )
     if window_id:
+        if topic_pause.note_closed(user.id, chat_id, thread_id):
+            return
         display = thread_router.get_display_name(window_id)
         if config.topic_discovery_mode == "marked":
             cleared = await detach_topic_target(

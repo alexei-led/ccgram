@@ -41,6 +41,7 @@ class ContentTask:
     enqueued_monotonic: float = field(default_factory=time.monotonic, compare=False)
     is_backlog_notice: bool = False
     source_provider_name: str | None = None
+    topic_revision: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

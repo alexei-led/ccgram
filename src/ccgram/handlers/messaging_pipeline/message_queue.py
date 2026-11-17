@@ -30,8 +30,9 @@ from ...delivery_contract import (
     get_active_delivery_receipt,
     new_delivery_receipt,
 )
-from ...telegram_client import TelegramClient
+from ...telegram_client import TelegramClient, DeliveryWithdrawnError, delivery_guard
 from ...telegram_rate_limiter import retry_after_seconds
+from .. import topic_pause
 from ...thread_router import thread_router
 from ...topic_state_registry import topic_state
 from ...window_resolver import resolve_window_alias
@@ -387,6 +388,7 @@ def _can_merge_tasks(base: ContentTask, candidate: MessageTask) -> bool:
         or candidate.is_backlog_notice
         or base.source_session_id != candidate.source_session_id
         or base.source_provider_name != candidate.source_provider_name
+        or base.topic_revision != candidate.topic_revision
         or base.content_type != "text"
         or candidate.content_type != "text"
         or base.tool_use_id is not None
@@ -479,6 +481,7 @@ async def _merge_content_tasks(
             is_text_batch=True,
             source_session_id=first.source_session_id,
             source_provider_name=first.source_provider_name,
+            topic_revision=first.topic_revision,
             source_checkpoint=latest_source_checkpoint,
             enqueued_monotonic=oldest_enqueued_monotonic,
         ),
@@ -610,6 +613,12 @@ def _is_stale_task(user_id: int, task: MessageTask) -> bool:
             source_provider=task.source_provider_name,
             source_session_id=task.source_session_id,
         )
+        return True
+    if topic_pause.paused(user_id, task.thread_id, getattr(task, "chat_id", None)):
+        return True
+    if isinstance(task, ContentTask) and task.topic_revision != topic_pause.revision(
+        user_id, task.thread_id, task.chat_id
+    ):
         return True
     if not is_window_live(task.window_id):
         now = time.monotonic()
@@ -768,15 +777,18 @@ async def _dispatch_with_retry(
             window_id=getattr(state.task, "window_id", "")
         ):
             try:
-                result = await _dispatch(
-                    client,
-                    user_id,
-                    state.task,
-                    queue,
-                    lock,
-                    dispatch_state,
-                )
-                outcome = getattr(result, "outcome", DeliveryOutcome.DELIVERED)
+                with delivery_guard(lambda: not _is_stale_task(user_id, state.task)):
+                    result = await _dispatch(
+                        client,
+                        user_id,
+                        state.task,
+                        queue,
+                        lock,
+                        dispatch_state,
+                    )
+                    outcome = getattr(result, "outcome", DeliveryOutcome.DELIVERED)
+            except DeliveryWithdrawnError:
+                return DeliveryOutcome.INTENTIONALLY_DROPPED
             except RetryAfter as exc:
                 state.task = _retry_task_for_state(dispatch_state, state.task)
                 telegram_delay = retry_after_seconds(exc)
@@ -1103,6 +1115,7 @@ async def enqueue_content_message(
             else (receipt.checkpoint if receipt is not None else None)
         ),
         is_backlog_notice=is_backlog_notice,
+        topic_revision=topic_pause.revision(user_id, thread_id, chat_id),
     )
     queue.put_nowait(task)
     return True

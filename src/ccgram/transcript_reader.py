@@ -152,7 +152,7 @@ def render_protocol_records(
         "apply_patch": "Edit",
         "request_user_input": "AskUserQuestion",
     }
-    for _, record in records:
+    for source, record in records:
         role = "assistant" if record.role == "agent" else record.role
 
         def render_parts(parts: tuple[dict[str, Any], ...]) -> None:
@@ -212,6 +212,7 @@ def render_protocol_records(
                             phase=record.phase,
                             role=role,
                             provider_name=provider_name,
+                            source_offset=source.offset,
                         )
                     )
                 rendered.append(
@@ -225,6 +226,7 @@ def render_protocol_records(
                         role=role,
                         tool_name=tool_name if isinstance(tool_name, str) else None,
                         provider_name=provider_name,
+                        source_offset=source.offset,
                     )
                 )
 
@@ -250,6 +252,7 @@ def render_protocol_records(
                         role="assistant",
                         tool_name=tool_aliases.get(raw_name or "", raw_name),
                         provider_name=provider_name,
+                        source_offset=source.offset,
                     )
                 )
 
