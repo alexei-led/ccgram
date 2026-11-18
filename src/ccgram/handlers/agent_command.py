@@ -51,7 +51,7 @@ logger = structlog.get_logger()
 _BUTTONS_PER_ROW = 3
 
 # Stable order also defines the provider-button layout; labels stay in one place.
-_PROVIDER_ORDER = ("antigravity", "claude", "codex", "gemini", "pi", "shell")
+_PROVIDER_ORDER = ("antigravity", "claude", "codex", "gemini", "omo", "pi", "shell")
 _VALID_NAMES = frozenset(_PROVIDER_ORDER) | {"auto"}
 
 

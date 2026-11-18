@@ -11,6 +11,7 @@ from weakref import WeakValueDictionary
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from ..providers.pi import PI_LIKE_PROVIDERS
 from .backend import Target
 from .input_lock import input_lock
 from .models import (
@@ -393,7 +394,11 @@ class ActionExecutor:
                 "unsupported_action",
                 "Session does not support this action",
             )
-        if internal and action.kind == "message.followup" and target.provider != "pi":
+        if (
+            internal
+            and action.kind == "message.followup"
+            and target.provider not in PI_LIKE_PROVIDERS
+        ):
             raise ProtocolError(
                 422,
                 "unsupported_action",

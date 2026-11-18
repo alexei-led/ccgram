@@ -34,6 +34,7 @@ DEFAULT_ENABLED_PROVIDERS: tuple[str, ...] = (
     "antigravity",
     "claude",
     "codex",
+    "omo",
     "pi",
     "shell",
 )
