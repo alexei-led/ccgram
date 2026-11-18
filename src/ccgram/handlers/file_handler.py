@@ -12,10 +12,12 @@ Key handlers:
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+import asyncio
 import contextlib
 import errno
 import structlog
 import re
+import sys
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +47,7 @@ _MAX_FILENAME_BYTES = 200
 # CCGram's local size cap (50 MiB), separate from Telegram's download limit.
 _MAX_FILE_SIZE = 50 * 1024 * 1024
 _DOWNLOAD_ATTEMPTS = 3
+_DOWNLOAD_RETRY_DELAY_S = 0.5
 
 _FILENAME_PUNCT = frozenset("._-")
 
@@ -184,6 +187,10 @@ async def _download_to_staging(message: Message, file_id: str, staged: Path) -> 
             if isinstance(exc, BadRequest) or attempt == _DOWNLOAD_ATTEMPTS:
                 raise
             staged.unlink(missing_ok=True)
+            logger.debug(
+                "Telegram file download attempt %d failed; retrying: %s", attempt, exc
+            )
+            await asyncio.sleep(_DOWNLOAD_RETRY_DELAY_S)
         else:
             return
 
@@ -193,7 +200,11 @@ def _publish_download(staged: Path, dest: Path) -> str:
     try:
         dest.hardlink_to(staged)
     except OSError as exc:
-        if exc.errno not in {errno.ENOTSUP, errno.EOPNOTSUPP}:
+        # Linux link(2) also reports EPERM on filesystems without hard links.
+        if not (
+            exc.errno in {errno.ENOTSUP, errno.EOPNOTSUPP}
+            or (sys.platform == "linux" and exc.errno == errno.EPERM)
+        ):
             raise
     else:
         return dest.name
@@ -326,7 +337,7 @@ async def _upload_and_notify(
         await safe_reply(message, f"{success_emoji} Uploaded `{rel_path}`")
     else:
         await safe_reply(
-            message, f"\u274c File saved but failed to notify Claude: {err}"
+            message, f"\u274c Saved `{rel_path}` but failed to notify the agent: {err}"
         )
 
 

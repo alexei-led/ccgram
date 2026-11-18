@@ -813,12 +813,14 @@ CCGram separately rejects files above its local cap of 50 MiB; this does not
 raise Telegram's limit.
 
 If Telegram times out or hits another transient network error while fetching the
-file, CCGram tries up to three times total. Failed downloads don't leave a
-partial upload or replace an existing file. If the filesystem reports that
-hard links aren't supported, CCGram saves the completed file in a new
-subdirectory under `.ccgram-uploads/` and reports its actual path. If the file
-is saved but the agent notification fails, CCGram reports that separately and
-does not resend it.
+file, CCGram tries up to three times total, waiting half a second between
+attempts. Failed downloads don't leave a partial upload or replace an existing
+file. When creating a hard link returns `ENOTSUP` or `EOPNOTSUPP` (or `EPERM` on
+Linux, which can mean the filesystem doesn't support hard links), CCGram saves
+the completed file in a new subdirectory under `.ccgram-uploads/`. Telegram
+reports the actual path relative to the session's working directory, even if
+the agent notification fails. The file remains available, and CCGram does not
+resend the notification.
 
 ## File Delivery (`/send`)
 
