@@ -1,0 +1,16 @@
+  Configure Terminal Title
+  Select which items to display in the terminal title.
+
+  Type to search
+
+› [x] activity      Spinner while working, action-required message while blocked
+  [x] thread-name   Current thread name (omitted when unnamed)
+  [x] project-name  Project name (falls back to current directory name)
+  [ ] app-name      Codex app name
+  [ ] current-dir   Current working directory
+  [ ] run-state     Compact session run-state text (Ready, Working, Thinking)
+  [ ] thread-title  Current thread title, or thread identifier when unnamed
+  [ ] git-branch    Current Git branch (omitted when unavailable)
+↓
+  [ ! ] Action Required | thread name | ccgram-ui-codex
+  space toggle · ←/→ reorder · enter save · esc cancel

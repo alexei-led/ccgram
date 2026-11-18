@@ -35,6 +35,9 @@ def _tasks(now: float):
             new_callable=AsyncMock,
             return_value={},
         ) as recover,
+        patch(
+            _MODULE + "recover_topic_selections", new_callable=AsyncMock
+        ) as selections,
         patch(_MODULE + "log_throttle_sweep") as sweep,
     ):
         mock_time.monotonic.return_value = now
@@ -48,6 +51,7 @@ def _tasks(now: float):
             unbound=unbound,
             cleanup=cleanup,
             recover=recover,
+            selections=selections,
             sweep=sweep,
             config=mock_config,
         )
@@ -85,6 +89,7 @@ class TestRunPeriodicTasks:
 
         assert tasks.prune.await_count == (1 if expected else 0)
         assert tasks.recover.await_count == (1 if expected else 0)
+        assert tasks.selections.await_count == (1 if expected else 0)
         assert tasks.probe.await_count == (1 if expected else 0)
         assert tasks.cleanup.await_count == (1 if expected else 0)
         assert tasks.delivery_watch.await_count == (1 if expected else 0)

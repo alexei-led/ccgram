@@ -1,0 +1,8 @@
+Select a review preset
+
+› 1. Review against a base branch  (PR Style)
+  2. Review uncommitted changes
+  3. Review a commit
+  4. Custom review instructions
+
+  enter select · esc back

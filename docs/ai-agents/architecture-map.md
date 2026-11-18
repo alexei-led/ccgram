@@ -60,6 +60,8 @@ Live view (terminal → auto-refresh screenshots):
 
 Terminal closure and topic cleanup:
 
+On push-capable backends, the neutral `EventStreamMonitor` reports death through an awaited callback. Bootstrap wires the public `handlers/polling/window_death.py:handle_window_death` entrypoint. That adapter snapshots current recipients (deletion can unbind them during await) and routes to the same policy used by polling. See [runtime boundaries](../architecture.md#runtime-composition-and-lifecycle-boundaries).
+
 1. `handlers/polling/window_tick/apply.py` rechecks target presence and pending creation before retiring a dead binding.
 2. `handlers/topics/topic_deletion.py` persists cleanup ownership and attempts immediate topic/history deletion. Failed deletion remains queued; `/sync` and periodic maintenance retry it. Unknown presence never proves closure.
 3. `handlers/topics/topic_provisioning_recovery.py` recovers persisted creation records, verifies saved topics before binding, and retains recreation retries or unresolved remote outcomes. Active creation ownership has no age-based expiry.
@@ -88,6 +90,7 @@ Topic command panel (`/commands`):
 - A fresh live listing is the sole owner of identity-alias convergence. It folds only uniquely attested aliases and must run before hook-event consumption, because hook routing resolves only exact topic bindings; legacy aliases are migration evidence, never a second routing path.
 - Monitor-cycle ordering is identity reconciliation → session-map re-read → hook-event dispatch → session-map/transcript work. Alias migration must precede consumption of an event whose canonical Herdr target replaced a bound target; the event offset advances only after that dispatch path runs.
 - Transcript offsets are delivered watermarks, not queue-idleness snapshots. `delivery_contract.py` owns the dependency-light receipt/outcome model; the message queue settles it and the monitor persists only receipts settled as delivered or intentionally dropped, leaving failed receipt ranges replayable after restart. Core monitor code must not import handler implementations.
+- The planned iOS client uses `ccgram/1`, not Telegram topic IDs. `session_protocol` owns session lifecycle, requests, actions, and replay; Telegram cleanup and receipts stay adapter-owned. Current push subscriptions cover Telegram-bound targets; mobile-only sessions remain discoverable through core refresh. See [mobile-safe runtime boundaries](../architecture.md#shared-core-and-planned-mobile-clients).
 - No parse-layer truncation; splitting only at the Telegram send layer.
 - Per-window provider behavior + capability-gated UI.
 - tmux operations centralized in `tmux_manager.py`; no raw tmux shell calls in handlers.

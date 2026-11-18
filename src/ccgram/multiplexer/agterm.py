@@ -46,10 +46,15 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from collections import Counter
+from uuid import UUID
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
 import structlog
 
+from ..utils import log_throttled
+from ..topic_mark_types import TopicMarkWriteGuard, TopicMarkWriteWitness
+from . import native_process, topic_mark_transport
 from .agterm_panes import pane_sessions, split_session_id
 from .base import (
     AgentStatus,
@@ -132,6 +137,8 @@ _KEY_BYTES: dict[str, str] = {
     "Space": " ",
     "BSpace": "\x7f",
     "BTab": "\x1b[Z",
+    "S-Tab": "\x1b[Z",
+    "S-Enter": "\x1b[13;2u",
     "Up": "\x1b[A",
     "Down": "\x1b[B",
     "Right": "\x1b[C",
@@ -140,6 +147,8 @@ _KEY_BYTES: dict[str, str] = {
     "End": "\x1b[F",
     "PageUp": "\x1b[5~",
     "PageDown": "\x1b[6~",
+    "PPage": "\x1b[5~",
+    "NPage": "\x1b[6~",
     "Delete": "\x1b[3~",
 }
 
@@ -206,6 +215,8 @@ def _key_to_bytes(token: str) -> str | None:
     """
     if token in _KEY_BYTES:
         return _KEY_BYTES[token]
+    if len(token) == 1 and token.isprintable() and not token.isspace():
+        return token
     if token.startswith("M-"):
         rest = token[2:]
         # Meta plus a single printable character is ESC then that character —
@@ -264,6 +275,7 @@ class AgtermManager:
         # emit macOS MallocStackLogging noise.
         self._binary = shutil.which(binary) or binary
         self._run: AgtermRunner = runner or self._subprocess_run
+        self._marker_runner = runner
         # The session the bot itself runs in, so listings can skip it the way
         # the tmux backend skips ``config.own_window_id``. Empty when ccgram
         # runs outside agterm, in which case nothing is excluded on this count.
@@ -465,11 +477,26 @@ class AgtermManager:
         """
         window_ids = await self._open_window_ids()
         if window_ids is None:
+            log_throttled(
+                logger,
+                "agterm-window-list",
+                "agterm window list failed; window listing unconfirmed",
+                cooldown=60.0,
+                level="warning",
+            )
             return None
         workspaces: list[dict] = []
         for window_id in window_ids:
             result = await self._call(["tree", "--window", window_id])
             if result is None:
+                log_throttled(
+                    logger,
+                    f"agterm-tree:{window_id}",
+                    "agterm tree read failed for window %s; window listing unconfirmed",
+                    window_id,
+                    cooldown=60.0,
+                    level="warning",
+                )
                 return None
             tree = result.get("tree")
             if not isinstance(tree, dict):
@@ -505,6 +532,8 @@ class AgtermManager:
 
             if shell in KNOWN_SHELLS:
                 command = shell
+        markable = split_session_id(str(session.get("id", ""))) is None
+        flag = session.get("flagged")
         return WindowRef(
             window_id=str(session.get("id", "")),
             window_name=str(session.get("name") or ""),
@@ -520,7 +549,43 @@ class AgtermManager:
             topic_eligible=self._is_adoptable(session)
             and (workspace is None or self._in_scope(workspace))
             and _runs_a_known_agent(foreground),
+            # agterm flags a session, not each pane. Never project the primary
+            # flag onto a split, even a hidden one that shares its tree node.
+            topic_marked=(flag if isinstance(flag, bool) else None)
+            if markable
+            else False,
+            topic_markable=markable,
+            topic_mark_owner=self._topic_owner(session)
+            if markable and isinstance(flag, bool)
+            else None,
         )
+
+    @staticmethod
+    def _topic_owner(session: dict) -> str | None:
+        try:
+            return f"agterm:{UUID(str(session.get('id', '')))}"
+        except ValueError:
+            return None
+
+    def _topic_windows(self, tree: dict, *, picker: bool = False) -> list[WindowRef]:
+        rows = [
+            (
+                self._to_window(pane, workspace),
+                self._in_scope(workspace) and self._is_adoptable(session),
+            )
+            for workspace, session in self._sessions(tree)
+            for pane in pane_sessions(session)
+        ]
+        owners = Counter(
+            owner
+            for _, session in self._sessions(tree)
+            if (owner := self._topic_owner(session)) is not None
+        )
+        for window, _ in rows:
+            if window.topic_mark_owner and owners[window.topic_mark_owner] > 1:
+                window.topic_marked = None
+                window.topic_mark_owner = None
+        return [window for window, visible in rows if not picker or visible]
 
     async def _find_session(self, window_id: str) -> dict | None:
         """Return the private session dict for *window_id*, or None if gone.
@@ -604,12 +669,7 @@ class AgtermManager:
         tree = await self._tree()
         if tree is None:
             return []
-        return [
-            self._to_window(pane, workspace)
-            for workspace, session in self._sessions(tree)
-            if self._in_scope(workspace) and self._is_adoptable(session)
-            for pane in pane_sessions(session)
-        ]
+        return self._topic_windows(tree, picker=True)
 
     async def list_windows_for_reconciliation(self) -> list[WindowRef] | None:
         """List windows, or None when agterm cannot confirm the listing.
@@ -627,11 +687,135 @@ class AgtermManager:
         tree = await self._tree()
         if tree is None:
             return None
-        return [
-            self._to_window(pane, workspace)
-            for workspace, session in self._sessions(tree)
-            for pane in pane_sessions(session)
-        ]
+        return self._topic_windows(tree)
+
+    async def set_topic_mark(
+        self,
+        window_id: str,
+        marked: bool,
+        *,
+        owner: str | None = None,
+        write_guard: TopicMarkWriteGuard | None = None,
+    ) -> bool:
+        """Change only the expected primary UUID, never a stale routing target."""
+        try:
+            UUID(window_id)
+            target = (
+                str(UUID(owner.removeprefix("agterm:")))
+                if owner and owner.startswith("agterm:")
+                else window_id
+            )
+        except ValueError:
+            return False
+        expected = f"agterm:{UUID(target)}"
+        if owner is not None and owner != expected:
+            return False
+        windows = await self.list_windows_for_reconciliation()
+        if windows is None or any(
+            window.topic_markable and window.topic_mark_owner is None
+            for window in windows
+        ):
+            return False
+        matches = [window for window in windows if window.topic_mark_owner == expected]
+        if not matches:
+            # A tree miss alone is not authoritative absence across app windows.
+            return (
+                owner is not None
+                and not marked
+                and await self.window_exists(target) is False
+            )
+        if len(matches) != 1:
+            return False
+        window = matches[0]
+        if window.topic_marked is marked:
+            return True
+        if write_guard is None or not await self._set_topic_flag(
+            window.window_id, marked, write_guard
+        ):
+            return False
+        confirmed = await self.list_windows_for_reconciliation()
+        return (
+            confirmed is not None
+            and all(
+                not row.topic_markable or row.topic_mark_owner is not None
+                for row in confirmed
+            )
+            and sum(
+                row.topic_mark_owner == expected and row.topic_marked is marked
+                for row in confirmed
+            )
+            == 1
+        )
+
+    async def _set_topic_flag(
+        self, window_id: str, marked: bool, write_guard: TopicMarkWriteGuard
+    ) -> bool:
+        endpoint = self._topic_socket_path()
+        witness = topic_mark_transport.prepare_cli_write(
+            backend="agterm", binary=self._binary, socket_path=endpoint
+        )
+        if witness is None or witness.pin_path is None:
+            return False
+
+        def success(result: tuple[int, str, str]) -> bool:
+            if result[0] != 0:
+                return False
+            try:
+                payload = json.loads(result[1])
+            except ValueError:
+                return False
+            native = payload.get("result") if isinstance(payload, dict) else None
+            return (
+                isinstance(payload, dict)
+                and payload.get("ok") is True
+                and isinstance(native, dict)
+                and str(native.get("id", "")).casefold() == window_id.casefold()
+            )
+
+        async def injected_runner(
+            _binary: str, args: list[str]
+        ) -> tuple[int, str, str]:
+            return await self._run(args, None)
+
+        result = await topic_mark_transport.guarded_cli_write(
+            witness,
+            write_guard,
+            self._binary,
+            [
+                "session",
+                "flag",
+                "on" if marked else "off",
+                "--target",
+                window_id,
+                "--json",
+                "--socket",
+                witness.pin_path,
+            ],
+            success=success,
+            runner=injected_runner if self._marker_runner is not None else None,
+        )
+        return result is not None
+
+    def _topic_socket_path(self) -> str:
+        if self._socket_path:
+            return self._socket_path
+        state_dir = os.environ.get("AGTERM_STATE_DIR")
+        base = (
+            Path(state_dir)
+            if state_dir is not None
+            else Path.home() / "Library/Application Support/agterm"
+        )
+        return str(base / "agterm.sock")
+
+    async def topic_mark_endpoint_scope(self) -> str | None:
+        return native_process.inspect_endpoint_scope(
+            self._topic_socket_path(), backend="agterm", binary=self._binary
+        )
+
+    async def recover_topic_mark_write(
+        self, witness: TopicMarkWriteWitness
+    ) -> bool | None:
+        return topic_mark_transport.recover_write(witness, backend="agterm")
 
     async def list_workspaces(self) -> list[WorkspaceRef]:
         """List agterm workspaces; the id is an opaque token for ``create_window``."""
@@ -658,10 +842,10 @@ class AgtermManager:
 
     async def find_window_by_id(self, window_id: str) -> WindowRef | None:
         """Find a session by its UUID; None when it no longer exists."""
-        session = await self._find_session(window_id)
-        # No workspace passed: addressing a known id is not discovery, so an
-        # out-of-scope window is still findable and drivable.
-        return None if session is None else self._to_window(session)
+        windows = await self.list_windows_for_reconciliation()
+        return next(
+            (window for window in windows or [] if window.matches(window_id)), None
+        )
 
     async def _read_text(self, window_id: str, *, lines: int | None) -> str | None:
         """Read the agent pane's buffer as plain text; None on a failed read.

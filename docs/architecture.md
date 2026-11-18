@@ -67,6 +67,71 @@ flowchart LR
     class State store
 ```
 
+## Runtime composition and lifecycle boundaries
+
+`bootstrap.py` owns construction and adapter wiring. Neutral monitors report
+facts through awaited callbacks. They do not resolve Telegram recipients or
+unwrap a bot. This keeps presentation changes out of event observation without
+adding a broker or interfaces around every import.
+
+On event-stream backends, `EventStreamMonitor` updates `agent_status_cache` and
+awaits its required `on_window_died(window_id)` callback after clearing cached
+status. Bootstrap binds that callback to the public
+`handlers/polling/window_death.py:handle_window_death` entrypoint. This Telegram
+adapter snapshots current recipients before awaiting the existing death-policy
+handler, because deletion can unbind them. The same handler serves push and polling.
+It checks exact chat identity, pending creation, and authoritative absence before
+deleting a topic. It retains the topic when `autodelete_dead_topics` is disabled. Its
+pre-await marker prevents concurrent push/poll duplicate work. A failed callback
+is logged without dropping later events. Cancellation propagates.
+`stop_delivery_runtime` cancels and awaits producers, including an in-flight
+death callback, before draining queued deliveries.
+
+`main.run_bot` owns process control. It supplies two synchronous hooks through
+`application.bot_data`: `request_restart` and `get_shutdown_reason`.
+The first requests restart after polling returns. The second reads the current
+shutdown signal and returns display text when `post_stop` sends its best-effort
+goodbye message. It must not freeze the startup reason. Alternate hosts without
+a reason getter display `Clean exit`. The bot never imports private CLI state.
+Signal registration, re-raise, watchdog exit codes, and restart execution remain
+runner responsibilities.
+
+Behavior checks live in `test_event_stream_monitor.py`, `test_bootstrap.py`,
+`handlers/polling/test_window_death.py`, `handlers/polling/test_window_tick.py`,
+`test_main.py`, and
+`test_error_handler.py` under `tests/ccgram/`.
+`test_runtime_boundaries.py` rejects presentation imports in the neutral monitor
+and CLI imports in the bot, including nested/lazy forms. Bootstrap must use the
+public Telegram entrypoint instead of importing private polling implementation.
+Archfit mirrors these directions with fail rules and declares only the narrow
+`window_death` module public, not other polling internals. Module ownership and
+volatility labels stay unchanged.
+
+### Shared core and planned mobile clients
+
+The [iOS design](architecture-design/2026-10-20-ios-app.md) is a thin client of
+`ccgram/1`, not of Telegram topics. Shared session IDs, canonical messages,
+requests, safe/idempotent actions, and replay remain in `session_protocol/`.
+The [implemented contract](protocol/implementation.md) and `protocol/v1/`
+schemas take precedence over older module names in the design.
+
+The monitor reports an internal native-target fact. It does not publish a mobile
+wire event or define the protocol session lifecycle. `LocalSessionService.refresh`
+owns target discovery, request closure, and `session.removed` events. Telegram
+topic cleanup stays in its adapter. Mobile replay never holds Telegram delivery
+receipts or watermarks.
+
+Current push subscriptions cover Telegram-bound targets. Mobile-only targets use
+the shared service's refresh loop independently. If push coverage expands,
+composition must source targets from the shared core, not treat Telegram
+bindings as the global session registry. The monitor's injected target provider
+and callback allow that without adding mobile DTOs to observation.
+
+The clean-interpreter import check rejects transitive Telegram/handler imports
+from the neutral monitor. Existing protocol boundary, fixture, and replay-isolation
+tests protect the shared core. Native iOS UI, APNs, and Telegram-free process
+startup remain later phases, not new scaffolding in this refactor.
+
 ## State Flow: Topic → Target → Session
 
 For Herdr, the topic binding is an opaque guarded session target, not a window or pane. `multiplexer/herdr.py` alone parses `agent.list`, derives the digest, and uses the matched live locator for one action. A shared tab is projected as one pane-qualified topic per agent. Legacy tab/pane/terminal bindings are persisted as `legacy_herdr`, blocked, and retained only for archive/rollback until an explicit rebind.
@@ -266,7 +331,7 @@ flowchart TB
 | Picker hints                                      | `ProviderCapabilities.tui_picker_commands` lists modal-opening slash commands; `forward._picker_hint()` adds a hint pointing at `/toolbar` when one is forwarded, with the hint text adapted to the resolved `ToolbarLayout`                                                                                                                                                                                                                          |
 | `handlers/` feature subpackages                   | Handlers are grouped into 14 feature subpackages; each `__init__.py` re-exports the public surface                                                                                                                                                                                                                                                                                                                                                    |
 | Constructor DI for stores                         | `SessionManager` constructs `WindowStateStore`/`ThreadRouter`/`UserPreferences`/`SessionMapSync` with explicit `schedule_save` callbacks; no `_wire_singletons` and no silent unwired defaults — `register_*_callback` fails loud                                                                                                                                                                                                                     |
-| `bot.py` is a factory + lifecycle only            | 172 lines; `handlers/registry.py` owns PTB handler wiring; `bootstrap.py` owns `post_init` (ordered: `register_provider_commands` → `verify_hooks_installed` → `wire_runtime_callbacks` → `start_session_monitor` → `start_status_polling` → `start_miniapp_if_enabled`) and `post_shutdown`                                                                                                                                                          |
+| `bot.py` is a factory + lifecycle only            | `handlers/registry.py` owns PTB registration; `bootstrap.py` owns construction, callbacks, producer stop/drain, and teardown. The process runner supplies restart and live shutdown-reason hooks; see [runtime boundaries](#runtime-composition-and-lifecycle-boundaries).                                                                                                                                                                            |
 | `window_tick/decide,observe,apply`                | Pure decision kernel (`decide.py`, zero deps on tmux/PTB/singletons) + pure observer (`observe.py`, `TickContext` out) + side-effect applier (`apply.py`); `decide_tick` is unit-tested without mocks                                                                                                                                                                                                                                                 |
 | `TelegramClient` Protocol                         | Handlers depend on `TelegramClient` not `telegram.Bot`; `PTBTelegramClient` adapts in production, `FakeTelegramClient` records in tests. Only `bot.py`, `bootstrap.py`, `handlers/registry.py`, `telegram_client.py`, `telegram_rate_limiter.py`, `telegram_request.py`, `telegram_sender.py` import from `telegram.ext` at runtime                                                                                                                   |
 | Pure types vs stateful polling                    | `polling_types.py` holds contracts (stdlib + `providers.base.StatusUpdate` only); `polling_state.py` holds strategies + module-level singletons; `decide.py` imports only from `polling_types`. Pinned by `test_polling_types_purity.py`                                                                                                                                                                                                              |
@@ -274,9 +339,39 @@ flowchart TB
 | `session_state_ports/` live-session read contract | Volatile live-session reads (task snapshot, wait header, session-id, last-activity) go through `session_state_ports/live_session_state.py`. Direct handler imports of `get_claude_task_snapshot`, `get_claude_wait_header`, or `claude_task_state.has_snapshot` are banned. Write authority stays in `session_lifecycle`. Gate: `test_session_state_ports_audit.py`                                                                                   |
 | State-file contracts in `hooks/state_files.py`    | `EventLogRecord`/`SessionMapEntry` are the canonical record types for `events.jsonl` and `session_map.json`. All production writes use `serialize_*`; all reads use `parse_*`. File I/O and locking stay in `hook.py`/`session_map.py`. `state_files.py` is stdlib-only                                                                                                                                                                               |
 | Topic-creation seam split                         | `directory_callbacks.py` is a thin dispatcher; `topic_creation_draft.py` owns the 14 flow-state keys; `workspace_callbacks.py` handles workspace picker; `provider_mode_callbacks.py` handles provider/mode selection; `window_launch_service.py` owns window creation, race guard, thread bind, and pending-text forwarding                                                                                                                          |
-| Shared transcript normalization                      | `session_protocol/messages.py` normalizes provider records for history and live delivery. Telegram renders canonical batches through `transcript_reader.py`; the shared event hub retains receipt-based checkpoints. The old provider parser APIs and `transcript_parser.py` are removed. See [protocol implementation](protocol/implementation.md).                                                                                                                                                                                                                           |
+| Shared transcript normalization                   | `session_protocol/messages.py` normalizes provider records for history and live delivery. Telegram renders canonical batches through `transcript_reader.py`; the shared event hub retains receipt-based checkpoints. The old provider parser APIs and `transcript_parser.py` are removed. See [protocol implementation](protocol/implementation.md).                                                                                                  |
 | Recovery split                                    | `recovery_callbacks.py` is a thin dispatcher; `recovery_banner.py` owns dead-window banner UX; `resume_picker.py` owns the resume picker + transcript scan. `recovery/__init__.py` re-exports the public surface                                                                                                                                                                                                                                      |
-| Commands subpackage                               | `handlers/commands/` mirrors the `shell/` pattern: `forward.py`, `menu_sync.py`, `panel.py`, `failure_probe.py`, `status_snapshot.py`. `panel.py` renders topic-specific command inline keyboards; Telegram’s native `/` menu remains shared across topics. `commands/__init__.py` hosts `commands_command` + `toolbar_command`                                                                                                                                                                                                                                                        |
+| Commands subpackage                               | `handlers/commands/` mirrors the `shell/` pattern: `forward.py`, `menu_sync.py`, `panel.py`, `failure_probe.py`, `status_snapshot.py`. `panel.py` renders topic-specific command inline keyboards; Telegram’s native `/` menu remains shared across topics. `commands/__init__.py` hosts `commands_command` + `toolbar_command`                                                                                                                       |
 | Lazy-import contract                              | In-function `Import`/`ImportFrom` must carry `# Lazy: <reason>` (or live inside `if TYPE_CHECKING:` / `_reset_*_for_testing`). `scripts/lint_lazy_imports.py` runs in `make lint`; cycle regressions caught by `tests/integration/test_import_no_cycles.py`                                                                                                                                                                                           |
 
 <!-- markdownlint-enable MD060 -->
+
+## Archfit policy
+
+The schema 3 policy in `.archfit.yaml` groups the code into 24 modules across
+the `core` and `adapter` layers. It declares module paths, public surfaces,
+allowed dependencies, and volatility. The built-in rules enforce graph
+dependencies, coupling, cycles, layer direction, and ownership of new production
+code. Eleven converted custom rules remain notes; they document the multiplexer
+backend seam, provider detection, neutral event-stream ownership, bootstrap's
+supported handler entrypoint, and bot/runner direction. See `.archfit.yaml` for
+the exact module and dependency declarations.
+
+Use Archfit 4 commands: `archfit check` checks whole-graph drift,
+`archfit rules [path-or-rule]` shows applicable policy, and
+`archfit can <file> <target>` checks a proposed dependency. `archfit report`
+produces a report; Archfit 4 has no scorecard or LLM-summary command. The
+GitHub Action reports changes to the Archfit App, which decides the gate.
+The Python boundary audit tests remain repository-owned fitness checks.
+
+
+### Policy proposal pushes
+
+Install the repository hook with `git config --local core.hooksPath scripts/git-hooks`.
+For a checked-out feature branch pushed to `origin`, a changed policy runs the
+F1–F6 guards and `archfit check --policy .archfit.yaml`. Source and policy must be
+committed; candidate failures and unknown results block the push. This is a
+candidate preview, not owner approval. The required Archfit App gate still owns
+policy approval before merge. Policy-changing default-branch, tag, mixed-ref,
+foreign-remote, or non-checked-out pushes cannot use this proposal path. Ordinary
+source pushes retain the target-policy check.

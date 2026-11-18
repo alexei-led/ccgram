@@ -1,0 +1,20 @@
+Help  General   Commands   Custom commands
+
+
+   Claude understands your codebase, makes edits with your permission, and executes commands — right from your terminal.
+
+   New here? Run /powerup to learn the features most people miss.
+
+   Shortcuts
+   ! for shell mode          double tap esc to clear input        ctrl + shift + _ to undo
+   / for commands            shift + tab to auto-accept edits     ctrl + z to suspend
+   @ for file paths          ctrl + o for verbose output          ctrl + v to paste images
+   /btw for side question    ctrl + t to toggle tasks             opt + p to switch model
+                             shift + ⏎ for newline                ctrl + s to stash prompt
+                                                                  ctrl + g to edit in $EDITOR
+                                                                  /keybindings to customize
+
+
+   For more help: https://code.claude.com/docs/en/overview
+
+   Esc to cancel

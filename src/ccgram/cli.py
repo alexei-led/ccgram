@@ -16,6 +16,8 @@ from pathlib import Path
 
 import click
 
+from .topic_discovery import TOPIC_DISCOVERY_ENV, TOPIC_DISCOVERY_MODES
+
 _LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 
 
@@ -76,6 +78,7 @@ _FLAG_TO_ENV: list[tuple[str, str]] = [
     ("hide_tool_calls", "CCGRAM_HIDE_TOOL_CALLS"),
     ("hide_thinking", "CCGRAM_HIDE_THINKING"),
     ("status_mode", "CCGRAM_STATUS_MODE"),
+    ("topic_discovery", TOPIC_DISCOVERY_ENV),
 ]
 
 
@@ -200,6 +203,13 @@ def apply_args_to_env(**kwargs: object) -> None:
     help="Hide thinking messages globally.",
 )
 @click.option(
+    "--topic-discovery",
+    type=click.Choice(TOPIC_DISCOVERY_MODES, case_sensitive=False),
+    default=None,
+    envvar=TOPIC_DISCOVERY_ENV,
+    help="Automatic topic discovery: auto (default) or explicitly marked terminals only.",
+)
+@click.option(
     "--status-mode",
     type=click.Choice(["system", "user"], case_sensitive=False),
     default=None,
@@ -220,6 +230,11 @@ def run_cmd(**kwargs: object) -> None:
 
 
 @cli.command("hook")
+@click.option(
+    "--background",
+    is_flag=True,
+    help="Hand off event reporting to a detached worker and return immediately.",
+)
 @click.option(
     "--install",
     is_flag=True,
@@ -245,7 +260,11 @@ def run_cmd(**kwargs: object) -> None:
     help="Agent provider hook contract (default: auto-detect; claude for setup).",
 )
 def hook_cmd(
-    install: bool, uninstall: bool, status: bool, provider_name: str | None
+    install: bool,
+    uninstall: bool,
+    status: bool,
+    provider_name: str | None,
+    background: bool,
 ) -> None:
     """Agent session tracking hook."""
     # Lazy: defer subcommand import until that command is invoked, keeping `ccgram --help` fast
@@ -256,6 +275,7 @@ def hook_cmd(
         uninstall=uninstall,
         status=status,
         provider_name=provider_name.lower() if provider_name else None,
+        background=background,
     )
 
 
@@ -388,3 +408,39 @@ def devices_revoke_cmd(device_id: str) -> None:
         raise click.ClickException(exc.message) from exc
     finally:
         store.close()
+
+
+@cli.group("topic")
+def topic_cmd() -> None:
+    """Inspect or change explicit terminal selection for Telegram topics."""
+
+
+def _run_topic_command(action: str, target: str | None) -> None:
+    # Lazy: native marker commands do not need the bot or its credentials.
+    from .topic_mark_cmd import topic_main
+
+    try:
+        click.echo(topic_main(action, target))
+    except (ValueError, LookupError, RuntimeError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@topic_cmd.command("mark")
+@click.argument("target")
+def topic_mark_cmd(target: str) -> None:
+    """Select TARGET for automatic topic creation in marked mode."""
+    _run_topic_command("mark", target)
+
+
+@topic_cmd.command("unmark")
+@click.argument("target")
+def topic_unmark_cmd(target: str) -> None:
+    """Unselect TARGET without disconnecting its existing Telegram topics."""
+    _run_topic_command("unmark", target)
+
+
+@topic_cmd.command("status")
+@click.argument("target", required=False)
+def topic_status_cmd(target: str | None) -> None:
+    """Print native selection for TARGET, or all live targets, as JSON."""
+    _run_topic_command("status", target)

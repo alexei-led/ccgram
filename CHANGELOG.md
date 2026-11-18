@@ -5,6 +5,280 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.25.0] - 2026-11-18
+
+### Fixed
+
+- Advance the delivery checkpoint after a merged Telegram send completes, even when several messages share one receipt. This prevents a stuck checkpoint from replaying already delivered transcript output after a restart ([#395](https://github.com/alexei-led/ccgram/issues/395)).
+- Retry transient Telegram photo and document downloads up to three attempts total. Only completed files are saved, existing uploads are not overwritten, and Telegram reports the saved path even if the agent could not be notified ([#397](https://github.com/alexei-led/ccgram/issues/397)).
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.24.0...v4.25.0)
+
+## [4.24.0] - 2026-11-17
+
+### Flag-driven topic lifecycle
+
+- In marked discovery mode, unflagging a markable primary pauses forwarding and closes its Telegram topic without deleting messages or stopping the terminal. Reflagging reopens the same topic without replaying paused transcript output.
+- Persist paused bindings and source-generation-qualified resume frontiers across restarts; transcript rotation cannot leave a stale cutoff suppressing fresh replies. Fence queued retries, tool batches, drafts and live views against pause/resume generations.
+- Recreate a deleted paused topic after reflagging through durable automatic provisioning; never close its running terminal because the paused topic is missing.
+- Add `/sync unflagged`: preview exact paused topics and confirm permanent deletion. Fresh native flag, owner, binding and provisioning checks protect changed or unknown targets. Failed requests require a new preview rather than an unguarded automatic retry.
+
+### Upgrade
+
+After upgrading, restart the bot. **With `CCGRAM_TOPIC_DISCOVERY=marked`, existing unflagged primary topics now pause and close.** Flag the sessions you want to keep forwarding. Closed topics retain their history and remain visible until explicitly deleted. Default `auto` mode and explicitly bound agterm splits are unchanged.
+
+For flag-controlled topics, closing in Telegram no longer clears the native flag; a still-flagged topic reopens. Use `/unbind` and confirm to detach. Deleted Telegram history cannot be recovered by reflagging; a fresh topic is created instead. Already-dispatched requests cannot be recalled.
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.23.0...v4.24.0)
+
+## [4.23.0] - 2026-11-15
+
+### Marked-only topic discovery
+
+- Opt in with `CCGRAM_TOPIC_DISCOVERY=marked` or `ccgram run --topic-discovery marked`. Automatic discovery remains the default on agterm, Herdr, and tmux.
+- Select a terminal with `ccgram topic mark TARGET`; inspect exact target IDs, native owners, and unfinished operations with `ccgram topic status`. These commands do not need Telegram credentials. In marked mode, `unmark TARGET` stops future automatic admission without interrupting existing topics.
+- Keep selection with the native terminal, not its agent conversation: agterm uses the primary session flag, tmux a window-local option, and standard Herdr a persisted ON/OFF owner suffix. Herdr retains the visible owner suffix when unselected. No Herdr fork or restoration plugin is required.
+- Journal native selection for Telegram-created, explicitly bound and CLI-selected targets. Credential-free CLI mutation requires the matching state, backend and actual native endpoint, through the live daemon or an exclusive offline state lease. No unjournaled direct-write fallback.
+- Arm native writes durably before dispatch. An ambiguous attempt blocks new admission, retries and settlement for its resource in both modes, without interrupting existing topic delivery or liveness. Maintenance requires verified native completion or exact native-process retirement before fresh owner/intent checks.
+- Detaching the last topic in marked mode clears selection but leaves the terminal running, protected from orphan expiry until successful re-admission.
+
+### Native boundaries
+
+Agterm splits remain explicitly bindable without selecting the primary. Tmux selection lasts for its native window's lifetime. Herdr layout copies include selection: duplicate owners are quarantined, but a sole copy is indistinguishable from an intentional import. Concurrent external metadata edits are not atomic compare-and-set operations.
+
+Unproved native endpoints fail closed. An agterm installed/running image mismatch (`-67034`, `errSecCSStaticCodeChanged`) refuses guarded writes. Save work and restart the App normally before retrying. No positive live guarded agterm write is claimed against that mismatched image. See [native limits](https://github.com/alexei-led/ccgram/blob/v4.23.0/docs/design/marked-topic-discovery.md#native-verification-and-limits).
+
+### Contributor safety
+
+Scope native-test cleanup to the creating socket/session. Never close a default-server window by a private-server ID or infer ownership of a workspace or Git checkout ([#402](https://github.com/alexei-led/ccgram/pull/402)).
+
+### Upgrade
+
+Stop older ccgram writers and CLI invocations before upgrading. Existing bindings remain active after restart. Ordinary v4.22 state without the marker journal is valid. Unpublished three- or four-field development journals fail closed: preserve them rather than deleting evidence.
+
+To opt in, set `CCGRAM_TOPIC_DISCOVERY=marked` and select exact IDs from status. Follow the [quarantine procedure](https://github.com/alexei-led/ccgram/blob/v4.23.0/docs/guides.md#native-write-quarantine-and-recovery) for ambiguous writes. CCGram never kills or restarts native servers. **Operator retirement of a tmux server can end terminals and agents and lose unsaved work.** A timer, snapshot or ccgram restart cannot clear dispatch uncertainty.
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.22.0...v4.23.0)
+
+## [4.22.0] - 2026-11-09
+
+### Performance — cost follows new output, not transcript size
+
+Large, long-lived transcripts made ccgram expensive. Every second the session protocol read, hashed and re-parsed each whole transcript. The Telegram reader hashed the consumed prefix up to three times per poll. With a few 100–200 MB sessions, the bot used a full CPU core and more than 1 GB of RAM, and inbound messages waited over a minute. Now an idle transcript costs one `stat`, and an append costs only the appended bytes.
+
+Measured on 21 Claude sessions (200/120/80/60/50 MB + 16 × 5 MB, 592 MB total):
+
+| | v4.21.1 | v4.22.0 |
+|---|---|---|
+| CPU, 60 s idle | 24.5 s | 0.4 s |
+| RSS, idle | ~1.2 GB | ~110 MB |
+| CPU, 60 s with 3 active sessions | 26.0 s | 0.7 s |
+| Longest event-loop block at startup | 0.35 s | 0.004 s |
+| Restart → first new output | 5.6 s | 2.1 s |
+| Append → delivered, p95 | 2.2 s | 1.1 s |
+
+### Session protocol
+
+- **Stat-first observation, one incremental builder.** An unchanged transcript costs one `stat`; an append reads only new bytes. Replacement is detected by inode and a tail marker. `build_messages` is now a batch wrapper over the same incremental `MessageBuilder`, so IDs, revisions, tool pairing and `historyGeneration` are unchanged ([#377](https://github.com/alexei-led/ccgram/pull/377)).
+- **No message index unless something reads it.** When only Telegram runs, the protocol core keeps a cursor per session, not a copy of the history. The index is built for a subscriber (kept for 300 s after it disconnects) or for 60 s after a history read. Large values stay in the transcript and are re-read by byte range ([#386](https://github.com/alexei-led/ccgram/pull/386), [#388](https://github.com/alexei-led/ccgram/pull/388)).
+- **Robust polling.** Cancellation cannot hang shutdown, read errors back off without overflow, one failing session does not stop the others, and a failed publish is retried in full ([#386](https://github.com/alexei-led/ccgram/pull/386), [#389](https://github.com/alexei-led/ccgram/pull/389)).
+
+### Telegram delivery
+
+- **O(appended) polling.** Appends are verified with a tail marker and a running hash instead of re-hashing the whole prefix every poll ([#379](https://github.com/alexei-led/ccgram/pull/379)).
+- **Fast, bounded restarts.** No transcript hashing at startup; the parser rebuild streams only the committed prefix in 4 MiB chunks (500 MB: 3.98 GB → 93 MB peak) and runs only for sessions with new output ([#379](https://github.com/alexei-led/ccgram/pull/379), [#381](https://github.com/alexei-led/ccgram/pull/381), [#385](https://github.com/alexei-led/ccgram/pull/385)).
+- **No lost output on transient I/O errors.** A read that is not emitted now restores its cursor ([#387](https://github.com/alexei-led/ccgram/pull/387)). Sessions that stay live under another window keep their state ([#383](https://github.com/alexei-led/ccgram/pull/383)); a cleared session id no longer inherits stale startup-replay state ([#374](https://github.com/alexei-led/ccgram/pull/374)).
+
+### Codex and commands
+
+- **`/status` on huge Codex rollouts** reads the head and a bounded tail instead of parsing the whole file (750 MB: 3.6 s → 0.2 s). It now shows rate limits, a correct context-window share and `5h`/`weekly` limit labels ([#378](https://github.com/alexei-led/ccgram/pull/378), [#382](https://github.com/alexei-led/ccgram/pull/382)).
+- **A failed typing indicator no longer drops a voice note or a forwarded command**, and `/clear` cleanup runs even when the confirmation reply fails ([#375](https://github.com/alexei-led/ccgram/pull/375), [#380](https://github.com/alexei-led/ccgram/pull/380), [#384](https://github.com/alexei-led/ccgram/pull/384)).
+
+### Mobile protocol clients
+
+Message upserts now go only to subscribers. A reconnect within 300 s replays from its cursor; after that, resume returns `resumed: false` and the client reloads history. The replay ring holds 1,000 events / 600 s. See [client guide](docs/protocol/client-guide.md).
+
+### Thanks
+
+- @Exzentttt — reported the protocol and Codex rollout cost ([#357](https://github.com/alexei-led/ccgram/issues/357), [#346](https://github.com/alexei-led/ccgram/issues/346)) and proposed the incremental design in [#358](https://github.com/alexei-led/ccgram/pull/358).
+- @moqaa — field measurements on #357 that showed the scale of the regression.
+- @paoloantinori — reported the prefix re-hash cost ([#354](https://github.com/alexei-led/ccgram/issues/354)), the tail-marker idea and tests in [#355](https://github.com/alexei-led/ccgram/pull/355), and the clear-session leak ([#367](https://github.com/alexei-led/ccgram/issues/367)).
+- @xh123637 — clear-session fix ([#371](https://github.com/alexei-led/ccgram/pull/371)).
+- @zerone0x — voice typing fix ([#368](https://github.com/alexei-led/ccgram/pull/368)).
+- @korengast — reported the dropped voice note ([#366](https://github.com/alexei-led/ccgram/issues/366)).
+
+### Upgrade
+
+No configuration migration is required. Upgrade and restart ccgram:
+
+```console
+uv tool upgrade ccgram
+# Or:
+brew upgrade ccgram
+```
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.21.1...v4.22.0)
+
+## [4.21.1] - 2026-11-04
+
+### Hook reporting
+
+- Run Claude Code, Codex, and Pi reporting hooks asynchronously, including SessionStart and Stop. Gemini reporting uses a detached worker because Gemini has no native async hook option.
+- Give up on contended hook file locks after two seconds per lock rather than waiting indefinitely. A timed-out write is logged and dropped; reporting remains best-effort.
+
+### Upgrade
+
+Upgrade ccgram and re-run the hook installer for each provider you use. Existing ccgram hook entries are updated in place without duplicates. Restart Pi or reload its hook-runner after updating its configuration. Without reinstalling, existing synchronous hooks can continue to delay the agent.
+
+```console
+uv tool upgrade ccgram
+# Or: brew upgrade ccgram
+ccgram hook --install
+ccgram hook --provider codex --install
+ccgram hook --provider pi --install
+ccgram hook --provider gemini --install
+```
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.21.0...v4.21.1)
+
+## [4.21.0] - 2026-10-28
+
+### Native command menus across agents
+
+- Drive recognized Codex and Claude Code command menus from an editable Telegram message, alongside Pi. Controls follow the native screen instead of guessing shortcuts from numbered rows.
+- Search or type by replying to a text-enabled menu without pressing Enter. Shortcut-only views expose a Search button where the CLI supports one.
+- Keep callbacks and replies bound to the displayed message, prompt, sequence and pane. Stale controls cannot confirm a newer prompt. Permission and question replies retain their existing workflow.
+
+### Input and recovery
+
+- Insert a newline in Pi extension editors without submitting, on agterm and tmux.
+- Recognize wrapped and ANSI-colored Codex menus without reviving stale screens.
+- Show only Refresh on unverified views, recover after failed menu updates, and label persistent and session-only actions separately.
+
+Support is limited to recognized screens and default keybindings. Not every native command, nested editor or save/apply action has been validated. Finish authentication and unsupported/private screens in the terminal. See [provider coverage](docs/providers.md#native-command-menus).
+
+### Upgrade
+
+No configuration migration is required. Upgrade and restart ccgram, then reopen menus for fresh controls:
+
+```console
+uv tool upgrade ccgram
+# Or:
+brew upgrade ccgram
+```
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.20.0...v4.21.0)
+
+## [4.20.0] - 2026-10-28
+
+### Pi menus in Telegram
+
+- Navigate Pi selectors and settings with scrolling, selection, save, toggle, and reorder controls.
+- Reply to a menu to type or search without submitting. Slash-prefixed replies remain literal input.
+- Fix agterm menu detection and keep stale buttons from sending input after the prompt changes.
+- Recover with Refresh when Telegram cannot update a menu.
+
+### Upgrade
+
+No configuration migration is required. Upgrade and restart ccgram:
+
+```console
+uv tool upgrade ccgram
+# Or:
+brew upgrade ccgram
+```
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.19.0...v4.20.0)
+
+## [4.19.0] - 2026-10-28
+
+### One line to start a session
+
+- Type `<agent>[:<mode>] <project|path> [@branch] <instruction>` in a fresh
+  topic and CCGram creates the session, binds the topic, names it and forwards
+  the instruction. The window picker, directory browser, worktree picker,
+  workspace picker, provider picker and mode picker are no longer part of the
+  normal path. `codex ccgram fix the hook timeout` is the whole flow.
+- Projects resolve under `CCGRAM_PROJECTS_ROOTS` (default `~/Workspace` when
+  it exists, else `~`): exact name, unique prefix, or an explicit path.
+  Symlinked names keep working. An ambiguous name gets one reply naming the
+  choices; a word followed by `@branch` is reported rather than guessed, and
+  nothing is stored between messages.
+- `@branch` creates a git worktree and roots the session in the same
+  subdirectory the project named, on every backend.
+- `/bind` adopts an already-running window when you want the old behaviour,
+  and sessions started in the terminal still become topics on their own.
+
+### Fewer prompts
+
+- Sessions launch in YOLO mode by default, and providers without a permissive
+  flag (Shell, Pi) always launch normally. An unrecognized mode suffix is
+  reported instead of silently selecting YOLO.
+- First-run screens are cleared without a tap: Claude's folder trust is seeded
+  in the profile the launch reads (`$CLAUDE_CONFIG_DIR` when set, otherwise
+  `~/.claude.json`), Codex's project trust in `$CODEX_HOME/config.toml`. When
+  a declared screen still appears, its exact fingerprint is answered once.
+  Seeding is skipped when a provider has a launch-command override, because an
+  override can select a profile CCGram cannot see.
+- Pickers offer only enabled providers whose CLI is installed. Gemini is out of
+  the default list, and an explicit `gemini ...` line is refused rather than
+  running the default provider.
+
+### Names that stay put
+
+- The topic title comes from the plan label and is pinned as the display name,
+  so a backend or agent title change no longer renames a topic to
+  `<name> <target id>`.
+
+### Restart flood control
+
+- An undelivered transcript range larger than `CCGRAM_STARTUP_REPLAY_MAX_KB`
+  (default 256) is treated as history on the first poll after a restart,
+  instead of re-sending thousands of messages into a flood-limited chat. A
+  skipped range stays skipped across a backlog-skip cancel, a session-id
+  refresh and a transcript replacement; output written after the clamp is
+  still delivered.
+
+### Upgrade
+
+**Defaults changed.** Each is one variable away from the previous behaviour:
+
+| Behaviour | New default | Restore the old default |
+| --- | --- | --- |
+| Launch mode | YOLO | `CCGRAM_DEFAULT_MODE=normal` |
+| Worktree step in the browser flow | off | `CCGRAM_NEW_TOPIC_WORKTREES=true` |
+| Workspace picker (herdr/agterm) | off, resolved from the folder | `CCGRAM_WORKSPACE_PICKER=true` |
+| Bind-existing picker on a new topic | off, use `/bind` | `CCGRAM_BIND_PICKER=true` |
+| Provider list | antigravity, claude, codex, pi, shell | `CCGRAM_PROVIDERS_ENABLED=claude,codex,gemini,pi,shell,antigravity` |
+
+**New settings:** `CCGRAM_PROJECTS_ROOTS`, `CCGRAM_STARTUP_REPLAY_MAX_KB`.
+
+**Agent config writes:** CCGram may now add a trust entry for the project it
+launches into: `~/.claude.json` (or the configured profile) and
+`$CODEX_HOME/config.toml`. `CCGRAM_AUTOSTART_TRUST=false` turns this off; the
+switch is final, and a per-agent `on` cannot override it.
+
+No state migration is needed. Upgrade and restart the bot.
+
+## [4.18.4] - 2026-10-25
+
+### Reliable session cleanup
+
+- Fix dead-window cleanup stopping when topic deletion changes recipient bindings. Other affected topics now continue through the existing safety checks ([#350](https://github.com/alexei-led/ccgram/pull/350)).
+- Separate event observation, Telegram cleanup, and runtime shutdown state while preserving shared mobile-core boundaries. Shutdown notices read the current reason through a runtime callback instead of private CLI state.
+
+### Upgrade
+
+No configuration or state migration is required. Upgrade with your installation method, then restart ccgram when ready:
+
+```console
+uv tool upgrade ccgram
+# Or, for Homebrew installations:
+brew upgrade ccgram
+```
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.18.3...v4.18.4)
+
 ## [4.17.0] - 2026-10-21
 
 ### Shared session core for Telegram and mobile

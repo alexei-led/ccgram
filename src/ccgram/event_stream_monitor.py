@@ -6,10 +6,9 @@ owns transcript content):
 
 - **agent status** pushes update the neutral ``agent_status_cache``, which
   Telegram status polling and shared-core bulk refreshes read before probing.
-- **window death** pushes trigger the existing dead-window banner
-  (``_handle_dead_window_notification``), which is idempotent against the poll
-  loop's own death detection (``is_dead_notified`` / ``mark_dead_notified``), so
-  push + poll never double-notify.
+- **window death** pushes clear cached status, then await the callback supplied
+  by bootstrap. Recipient routing and destructive topic policy belong to that
+  adapter, not the stream consumer.
 
 A supervisor task runs one ``watch_events`` iteration over the current bound
 window set; herdr cannot add subscriptions to a live connection, so when the
@@ -22,14 +21,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 import structlog
 
 from .multiplexer import agent_status_cache
 from .multiplexer import multiplexer as mux
 from .multiplexer.base import MuxEvent
-from .telegram_client import TelegramClient, unwrap_bot
 
 logger = structlog.get_logger()
 
@@ -43,10 +41,13 @@ class EventStreamMonitor:
     """Supervises a herdr event-stream subscription over the bound window set."""
 
     def __init__(
-        self, client: TelegramClient, list_window_ids: WindowIdsProvider
+        self,
+        list_window_ids: WindowIdsProvider,
+        *,
+        on_window_died: Callable[[str], Awaitable[None]],
     ) -> None:
-        self._client = client
         self._list_window_ids = list_window_ids
+        self._on_window_died = on_window_died
         self._task: asyncio.Task[None] | None = None
         self._running = False
 
@@ -130,24 +131,7 @@ class EventStreamMonitor:
             agent_status_cache.set_status(event.window_id, event.status)
         elif event.kind == "window_died":
             agent_status_cache.clear(event.window_id)
-            await self._notify_dead(event.window_id)
-
-    async def _notify_dead(self, window_id: str) -> None:
-        """Fire the existing (idempotent) dead-window banner for *window_id*."""
-        # Lazy: pulling the polling/handler graph at module load risks a cycle.
-        from .handlers.polling.window_tick.apply import (
-            _handle_dead_window_notification,
-        )
-
-        # Lazy: thread_router proxy, used only to resolve bound users on death.
-        from .thread_router import thread_router
-
-        bot = unwrap_bot(self._client)
-        for user_id, thread_id, bound_wid in thread_router.iter_thread_bindings():
-            if bound_wid == window_id:
-                await _handle_dead_window_notification(
-                    bot, user_id, thread_id, window_id
-                )
+            await self._on_window_died(event.window_id)
 
 
 # Module-level active instance (for bootstrap shutdown), mirroring

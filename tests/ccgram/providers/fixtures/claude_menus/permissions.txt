@@ -1,0 +1,10 @@
+   Permissions  Recently denied   Allow   Ask   Deny   Auto mode   Workspace
+
+   Claude Code won't ask before using allowed tools.
+   ╭───────────────────────────────────────────────╮
+   │ ⌕ Search…                                     │
+   ╰───────────────────────────────────────────────╯
+
+     1.   Add a new rule…
+
+   ←/→ to switch · ↓ to select · Esc to cancel

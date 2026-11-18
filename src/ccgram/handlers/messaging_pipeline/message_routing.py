@@ -12,8 +12,9 @@ from pathlib import Path
 import structlog
 
 from ... import session_query
+from .. import topic_pause
 from ...session_monitor import NewMessage
-from ...telegram_client import TelegramClient, unwrap_bot
+from ...telegram_client import TelegramClient, DeliveryWithdrawnError, unwrap_bot
 from ...telegram_draft import DRAFT_UNSET, DraftStream
 from ...user_preferences import user_preferences
 from ..interactive import (
@@ -104,6 +105,8 @@ async def _expire_draft(
             await draft.abort()
     except asyncio.CancelledError:
         raise
+    except DeliveryWithdrawnError:
+        pass
     finally:
         current = _draft_expiry_tasks.get(key)
         if current is asyncio.current_task():
@@ -198,6 +201,16 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
         return
 
     for user_id, window_id, thread_id, chat_id in active_users:
+        if not topic_pause.accepts_message(
+            user_id,
+            thread_id,
+            chat_id,
+            msg.session_id,
+            msg.source_offset,
+            msg.source_generation,
+            msg.source_identity,
+        ):
+            continue
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(
             window_id=window_id, session_id=msg.session_id
@@ -234,9 +247,23 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
                     window_id=window_id,
                 )
             await asyncio.sleep(0.3)
-            handled = await handle_interactive_ui(
-                client, user_id, window_id, thread_id, chat_id=chat_id
-            )
+            if not topic_pause.accepts_message(
+                user_id,
+                thread_id,
+                chat_id,
+                msg.session_id,
+                msg.source_offset,
+                msg.source_generation,
+                msg.source_identity,
+            ):
+                continue
+            try:
+                with topic_pause.guard(user_id, thread_id, chat_id):
+                    handled = await handle_interactive_ui(
+                        client, user_id, window_id, thread_id, chat_id=chat_id
+                    )
+            except DeliveryWithdrawnError:
+                continue
             if handled:
                 await _update_window_offset(user_id, window_id)
                 continue
@@ -246,13 +273,17 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
         if get_interactive_msg_id(user_id, thread_id, chat_id=chat_id):
             await clear_interactive_msg(user_id, client, thread_id, chat_id=chat_id)
 
-        if await _handle_assistant_stream(
-            msg,
-            client,
-            user_id,
-            thread_id,
-            chat_id,
-        ):
+        try:
+            with topic_pause.guard(user_id, thread_id, chat_id):
+                if await _handle_assistant_stream(
+                    msg,
+                    client,
+                    user_id,
+                    thread_id,
+                    chat_id,
+                ):
+                    continue
+        except DeliveryWithdrawnError:
             continue
 
         parts = build_response_parts(

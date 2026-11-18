@@ -114,6 +114,11 @@ def _server_result(
             payload,
             {"workspaces": [{"workspace_id": "w2", "label": "Workspace"}]},
         )
+    if method == "pane.list":
+        return _response(
+            payload,
+            {"panes": [{"terminal_id": "term-a", "pane_id": "w2:p1", "label": None}]},
+        )
     if method == "tab.list":
         return _response(payload, {"tabs": [{"tab_id": "w2:t1", "label": "Tab"}]})
     raise AssertionError(f"unexpected method: {method}")
@@ -163,10 +168,13 @@ async def test_socket_listing_projects_stable_session_target(herdr_server) -> No
     assert windows[0].window_id == expected
     assert windows[0].window_name == "Claude ▸ Workspace ▸ Tab ▸ p1"
     assert windows[0].topic_eligible is True
+    assert windows[0].topic_marked is False
+    assert windows[0].topic_mark_owner
     assert [payload["method"] for payload in requests] == [
         "agent.list",
         "workspace.list",
         "tab.list",
+        "pane.list",
     ]
 
 
@@ -312,6 +320,7 @@ async def test_empty_socket_path_discovers_once_then_uses_public_socket(
         "agent.list",
         "workspace.list",
         "tab.list",
+        "pane.list",
     ]
 
 

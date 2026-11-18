@@ -96,6 +96,7 @@ from .window_launch_service import (
     _persist_worktree_state,
     launch_window as _create_window_and_bind,
 )
+from ...config import config
 from ...worktrees import (
     WorktreeError,
     check_worktree_eligibility,
@@ -459,13 +460,19 @@ async def _handle_confirm(
             )
             return
 
-    # Eligible git repo → offer the worktree step before provider pick.
+    # Worktrees are opt-in (CCGRAM_NEW_TOPIC_WORKTREES=on) in this flow: the
+    # typed form covers the deliberate case with "@branch", and the extra
+    # picker step is exactly the friction this flow exists to remove.
     # Ineligible (non-git, bare, detached, mid-rebase) → unchanged flow.
     # Offloaded: check_worktree_eligibility runs blocking git subprocesses.
     eligibility = await asyncio.to_thread(
         check_worktree_eligibility, Path(selected_path)
     )
-    if eligibility.eligible and eligibility.repo_path is not None:
+    if (
+        config.new_topic_worktrees
+        and eligibility.eligible
+        and eligibility.repo_path is not None
+    ):
         if context.user_data is not None:
             context.user_data[PENDING_WORKTREE_REPO] = str(eligibility.repo_path)
             context.user_data[PENDING_WORKTREE_DIRTY] = eligibility.dirty

@@ -223,3 +223,79 @@ def test_plain_claude_hook_without_pi_environment_keeps_default(
         _WINDOW_KEY
     ]
     assert entry["provider_name"] == "claude"
+
+
+@pytest.mark.parametrize("poll_before_file", [False, True])
+async def test_claude_lazy_transcript_delivers_first_reply_from_zero(
+    hook_home, monkeypatch, poll_before_file
+):
+    cwd = str(hook_home / "project")
+    transcript = hook_home / ".claude/projects/project" / f"{_SESSION_ID}.jsonl"
+    _hook(monkeypatch, "SessionStart", cwd, transcript_path=str(transcript))
+    map_path = hook_home / "state/session_map.json"
+    monkeypatch.setattr(config, "session_map_file", map_path)
+    monkeypatch.setattr(config, "multiplexer_name", "agterm")
+    entry = json.loads(map_path.read_text())[_WINDOW_KEY]
+    assert entry.get("replay_from_start") is True
+    monitor = SessionMonitor(
+        projects_path=hook_home / "projects", state_file=hook_home / "monitor.json"
+    )
+    if poll_before_file:
+        assert not await monitor.check_for_updates({_WINDOW_ID: entry})
+        entry = json.loads(map_path.read_text())[_WINDOW_KEY]
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    records = [
+        {"type": "user", "uuid": "first-user", "message": {"content": "Hi"}},
+        {
+            "type": "assistant",
+            "uuid": "first-reply",
+            "message": {"content": [{"type": "text", "text": "First Claude reply"}]},
+        },
+    ]
+    transcript.write_text("".join(json.dumps(record) + "\n" for record in records))
+
+    messages = await monitor.check_for_updates({_WINDOW_ID: entry})
+
+    assert any(message.text == "First Claude reply" for message in messages)
+    assert not await monitor.check_for_updates({_WINDOW_ID: entry})
+
+
+async def test_claude_existing_transcript_is_not_rewound(hook_home, monkeypatch):
+    cwd = str(hook_home / "project")
+    transcript = hook_home / ".claude/projects/project" / f"{_SESSION_ID}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(
+        json.dumps({"type": "assistant", "message": {"content": "Old reply"}}) + "\n"
+    )
+    _hook(monkeypatch, "SessionStart", cwd, transcript_path=str(transcript))
+    map_path = hook_home / "state/session_map.json"
+    monkeypatch.setattr(config, "session_map_file", map_path)
+    monkeypatch.setattr(config, "multiplexer_name", "agterm")
+    entry = json.loads(map_path.read_text())[_WINDOW_KEY]
+    assert not entry.get("replay_from_start", False)
+    monitor = SessionMonitor(
+        projects_path=hook_home / "projects", state_file=hook_home / "monitor.json"
+    )
+
+    assert not await monitor.check_for_updates({_WINDOW_ID: entry})
+
+
+@pytest.mark.parametrize("failure", ["different-id", "unreadable"])
+def test_claude_unverified_source_is_not_reserved_for_replay(
+    hook_home, monkeypatch, failure
+):
+    cwd = str(hook_home / "project")
+    name = _OLD_SESSION_ID if failure == "different-id" else _SESSION_ID
+    transcript = hook_home / ".claude/projects/project" / f"{name}.jsonl"
+    if failure == "unreadable":
+        original_stat = Path.stat
+
+        def stat(path, *args, **kwargs):
+            if path == transcript:
+                raise PermissionError("unavailable source")
+            return original_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", stat)
+    _hook(monkeypatch, "SessionStart", cwd, transcript_path=str(transcript))
+    entry = json.loads((hook_home / "state/session_map.json").read_text())[_WINDOW_KEY]
+    assert not entry.get("replay_from_start", False)

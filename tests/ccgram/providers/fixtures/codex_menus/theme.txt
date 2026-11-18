@@ -1,0 +1,15 @@
+  Select Syntax Theme
+  Custom .tmTheme files can be added to the ~/.codex/themes directory.
+
+  Type to filter themes...                                                                        31  fn summarize(users: &[User]) -> String {
+↑                                                                                                 32 -    let active = users.iter().filter(|u| u.is_active).count();
+  base16-eighties-dark                                                                            32 +    let active = users.iter().filter(|u| u.is_active()).count();
+  base16-mocha-dark                                                                               33      let names: Vec<&str> = users.iter().map(User::name).take(3).collect();
+  base16-ocean-dark                                                                               34 -    format!("{} active: {}", active, names.join(", "))
+  base16-ocean-light                                                                              34 +    format!("{active} active users: {}", names.join(", "))
+  catppuccin-frappe                                                                               35 +        .trim()
+  catppuccin-latte                                                                                36  }
+  catppuccin-macchiato
+› catppuccin-mocha (current)
+↓
+  enter select · esc back

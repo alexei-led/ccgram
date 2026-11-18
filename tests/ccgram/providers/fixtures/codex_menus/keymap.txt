@@ -1,0 +1,14 @@
+Keymap
+All configurable shortcuts.
+154 actions, 0 customized, 6 unbound.
+
+ All   Common   Customized (0)   Unbound (6)   App   Composer   Editor   Vim   Navigation   Agents   Approval   Debug
+
+Type to search shortcuts
+
+› Global       - Open Agents                unbound
+  Global         Open Transcript            ctrl-t
+  Global         Find Transcript            f3
+  Global         Open External Editor       ctrl-g
+↓
+left/right group · enter edit shortcut · * custom · - unbound · esc close

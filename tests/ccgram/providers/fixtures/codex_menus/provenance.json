@@ -1,0 +1,18 @@
+{
+  "native_cli": "Codex CLI 0.164.0",
+  "environment": "agterm 0.38.1",
+  "cwd": "/tmp/ccgram-ui-codex",
+  "source": "Owned isolated native TUI sessions; captured with agtermctl session text. Menu text copied from actual screen captures, excluding startup/scrollback. Keymap list shortened to a bounded selection of native rows.",
+  "sanitization": "Removed startup/configuration/resource listings, account/usage information and temporary session identifiers. Replaced statusline example preview with <status preview>. Rstripped row padding; keymap body bounded. No authentication files accessed.",
+  "captured_titles": [
+    "Select Model and Effort",
+    "Select Reasoning Level for GPT-6-Astra",
+    "Advanced Reasoning",
+    "Update Model Permissions",
+    "Skills",
+    "Configure Status Line",
+    "Select a review preset",
+    "Keymap"
+  ],
+  "limitations": "No persistent settings saved; no review started. Model and statusline narrow captures are actual ~64-column split-pane screens; other width combinations remain unverified. Native slash inventory is complete for this invocation, but not every command was executed. Enter apply/save/edit behavior not activated."
+}

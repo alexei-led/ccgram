@@ -18,6 +18,8 @@ from functools import partial
 from typing import TYPE_CHECKING
 import asyncio
 import re
+import secrets
+import time
 
 import structlog
 from telegram import (
@@ -28,6 +30,7 @@ from telegram import (
 )
 from telegram.error import TelegramError
 from .. import window_query
+from . import topic_pause
 from ..multiplexer.base import canonical_window_id
 from ..config import config
 from ..session import AuditIssue, AuditResult, session_manager
@@ -37,6 +40,8 @@ from ..telegram_client import PTBTelegramClient, TelegramClient
 from ..thread_router import thread_router
 from ..multiplexer import multiplexer as tmux_manager
 from ..multiplexer.reconciliation import list_windows_for_reconciliation
+from ..topic_discovery import should_adopt_window
+from ..window_state_ports import lifecycle_state
 from ..user_preferences import user_preferences
 from .callback_data import CB_SYNC_DISMISS, CB_SYNC_FIX
 from .callback_registry import register
@@ -57,6 +62,8 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 _TELEGRAM_API_CONCURRENCY = 5
+_PAUSED_CLEANUP_TTL_SECONDS = 300.0
+_PAUSED_CLEANUP_BATCH_SIZE = 20
 _GHOST_RE = re.compile(r"user:(\d+)\s+thread:(\d+)\s+window:([^\s(]+)")
 _WINDOW_RE = re.compile(r"([^\s(]+)")
 
@@ -92,7 +99,7 @@ async def _run_audit() -> AuditResult | None:
     ``list_windows``: that one is the UI listing and a backend legitimately
     omits what it will not adopt, so using it here reports a live bound
     session as a fixable ghost the moment it becomes excluded. Adoptability is
-    the ``topic_eligible`` subset of the same listing.
+    the discovery-policy subset of the same listing.
 
     Returns None when no listing is available. The caller must not treat that
     as "nothing is live", which would classify every binding as dead.
@@ -102,7 +109,20 @@ async def _run_audit() -> AuditResult | None:
         return None
     live_ids = {w.window_id for w in all_windows}
     live_pairs = [(w.window_id, w.window_name) for w in all_windows]
-    adoptable = {w.window_id for w in all_windows if w.topic_eligible}
+    adoptable = {
+        w.window_id
+        for w in all_windows
+        if should_adopt_window(
+            w,
+            mode=config.topic_discovery_mode,
+            detach_pending=lifecycle_state.is_topic_detach_pending(
+                w.window_id, owner=w.topic_mark_owner
+            ),
+            quarantined=lifecycle_state.is_topic_mark_quarantined(
+                w.window_id, owner=w.topic_mark_owner
+            ),
+        )
+    }
     audit = session_manager.audit_state(live_ids, live_pairs, adoptable)
     audit.issues.extend(
         AuditIssue(
@@ -465,6 +485,10 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await safe_reply(update.message, "You are not authorized to use this bot.")
         return
 
+    if context.args and context.args[0] == "unflagged":
+        await _preview_paused_cleanup(update, context)
+        return
+
     logger.info(
         "State audit command started",
         chat_id=update.message.chat.id,
@@ -553,7 +577,20 @@ async def handle_sync_fix(
     # Fix adopts the orphans this audit reports, so the adoption question takes
     # the backend's verdict. The live set stays complete: it drives the pruning
     # below, and narrowing it would make a live excluded binding a fixable ghost.
-    adoptable_ids = {w.window_id for w in all_windows if w.topic_eligible}
+    adoptable_ids = {
+        w.window_id
+        for w in all_windows
+        if should_adopt_window(
+            w,
+            mode=config.topic_discovery_mode,
+            detach_pending=lifecycle_state.is_topic_detach_pending(
+                w.window_id, owner=w.topic_mark_owner
+            ),
+            quarantined=lifecycle_state.is_topic_mark_quarantined(
+                w.window_id, owner=w.topic_mark_owner
+            ),
+        )
+    }
 
     # Audit before fixing to count fixable issues
     client = PTBTelegramClient(query.get_bot())
@@ -635,3 +672,94 @@ async def _dispatch(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None
     elif query.data == CB_SYNC_DISMISS:
         await query.answer("Dismissed")
         await handle_sync_dismiss(query)
+
+
+async def _preview_paused_cleanup(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Preview exact candidates; no delete intent is armed by this command."""
+    if (
+        update.effective_user is None
+        or update.message is None
+        or context.user_data is None
+    ):
+        return
+    if not topic_pause.enabled():
+        await safe_reply(
+            update.message, "Use marked discovery mode for unflagged cleanup."
+        )
+        return
+    windows = await list_windows_for_reconciliation(tmux_manager)
+    if windows is None:
+        await safe_reply(
+            update.message, "Multiplexer unavailable; no cleanup authorized."
+        )
+        return
+    await topic_pause.reconcile_topic_pauses(PTBTelegramClient(context.bot), windows)
+    candidates = topic_pause.cleanup_candidates(
+        update.effective_user.id, update.message.chat.id
+    )
+    if not candidates:
+        await safe_reply(update.message, "No paused, unflagged topics to delete.")
+        return
+    total = len(candidates)
+    candidates = candidates[:_PAUSED_CLEANUP_BATCH_SIZE]
+    token = secrets.token_hex(8)
+    context.user_data["paused_topic_cleanup"] = (
+        token,
+        update.message.chat.id,
+        candidates,
+        time.monotonic() + _PAUSED_CLEANUP_TTL_SECONDS,
+    )
+    lines = [
+        f"{state.thread_id}: {thread_router.get_display_name(state.window_id).replace(chr(10), ' ').replace(chr(13), ' ')[:60]}"
+        for state in candidates
+    ]
+    await safe_reply(
+        update.message,
+        "Delete these paused topics and ALL their message history permanently?\n"
+        "Running terminal sessions will be kept.\n"
+        f"Showing {len(candidates)} of {total}; run again for remaining topics.\n\n"
+        + "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "Delete listed topics", callback_data=f"pauseclean:{token}"
+                    )
+                ]
+            ]
+        ),
+    )
+
+
+@register("pauseclean:")
+async def _confirm_paused_cleanup(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    query = update.callback_query
+    if query is None or query.message is None or update.effective_user is None:
+        return
+    if context.user_data is None:
+        return
+    preview = context.user_data.get("paused_topic_cleanup")
+    if (
+        not preview
+        or query.data != f"pauseclean:{preview[0]}"
+        or query.message.chat.id != preview[1]
+        or time.monotonic() > preview[3]
+    ):
+        await query.answer(
+            "Preview expired; run /sync unflagged again.", show_alert=True
+        )
+        return
+    context.user_data.pop("paused_topic_cleanup")
+    await query.answer()
+    result = await topic_pause.delete_paused_topics(
+        PTBTelegramClient(context.bot), preview[2]
+    )
+    await safe_edit(
+        query,
+        f"Deleted: {result['deleted']}; protected/changed: {result['protected']}; failed: {result['failed']}. Terminal sessions kept.",
+        reply_markup=None,
+    )

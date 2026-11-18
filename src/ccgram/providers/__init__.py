@@ -21,6 +21,8 @@ from ccgram.providers.base import (
     ResumableSession,
     SessionStartEvent,
     StatusUpdate,
+    TerminalControl,
+    TerminalMenu,
 )
 from ccgram.providers.process_detection import JS_RUNTIMES, get_cached_foreground_pgid
 from ccgram.providers.registry import ProviderRegistry, UnknownProviderError, registry
@@ -36,6 +38,62 @@ _YOLO_FLAGS: dict[str, str] = {
     "codex": "--dangerously-bypass-approvals-and-sandbox",
     "gemini": "--yolo",
 }
+
+
+def enabled_provider_names() -> list[str]:
+    """Providers offered in pickers, in registry order.
+
+    ``CCGRAM_PROVIDERS_ENABLED`` narrows the list (Gemini is out by
+    default). Registry order is kept so the UI is stable across restarts.
+    """
+    _ensure_registered()
+    # Lazy: Config reads the environment; providers is imported by lightweight
+    # callers (doctor, status) that must not require a full Config.
+    from ccgram.config import config
+
+    configured = tuple(config.enabled_providers)
+    names = registry.provider_names()
+    if not configured:
+        return names
+    return [name for name in names if name in configured]
+
+
+def provider_launchable(provider_name: str) -> bool:
+    """True when the provider CLI resolves on PATH or is user-overridden.
+
+    Keeps an uninstalled agent out of the picker instead of offering a launch
+    that fails after the tap. An explicit ``CCGRAM_<NAME>_COMMAND`` override
+    always counts: the operator owns that command, PATH lookup or not.
+    """
+    # Lazy: shutil + config only matter for the picker path.
+    import shutil
+
+    _ensure_registered()
+    env_key = f"CCGRAM_{provider_name.upper()}_COMMAND"
+    if os.environ.get(env_key):
+        return True
+    try:
+        provider = registry.get(provider_name)
+    except UnknownProviderError:
+        return False
+    if not provider.capabilities.launch_command:
+        # A provider that IS the shell (shell) launches no CLI of its own.
+        return True
+    if provider_name == "antigravity":
+        # Antigravity also ships outside PATH; its own resolver knows where.
+        # Lazy: only this provider needs the executable resolver.
+        from ccgram.providers.antigravity import resolve_antigravity_executable
+
+        resolved = resolve_antigravity_executable()
+        return bool(resolved) and (
+            shutil.which(resolved) is not None or os.path.isfile(resolved)
+        )
+    return shutil.which(provider.capabilities.launch_command) is not None
+
+
+def picker_provider_names() -> list[str]:
+    """Enabled providers that are also launchable on this host."""
+    return [name for name in enabled_provider_names() if provider_launchable(name)]
 
 
 def has_yolo_mode(provider_name: str) -> bool:
@@ -395,6 +453,9 @@ def resolve_capabilities(provider_name: str | None = None) -> ProviderCapabiliti
 
 
 __all__ = [
+    "enabled_provider_names",
+    "picker_provider_names",
+    "provider_launchable",
     "is_known_provider",
     "picker_capable_providers",
     "providers_to_scan",
@@ -406,6 +467,8 @@ __all__ = [
     "ResumableSession",
     "SessionStartEvent",
     "StatusUpdate",
+    "TerminalControl",
+    "TerminalMenu",
     "UnknownProviderError",
     "detect_provider_from_command",
     "detect_provider_from_pane",

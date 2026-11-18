@@ -21,7 +21,7 @@ everything through it after ``shlex.quote`` for safety.
 
 from __future__ import annotations
 
-import re
+import os
 import shlex
 import time
 from pathlib import Path
@@ -36,11 +36,16 @@ from ccgram.providers.base import (
 from ccgram.providers.pi_discovery import _PI_TELEGRAM_BUILTINS, discover_pi_commands
 from ccgram.providers.pi_format import read_session_header
 
-PI_QUESTION_FOOTER = "↑↓ navigate • Enter select • Esc cancel • number quick-select"
+from ccgram.providers.pi_tui import (
+    PI_QUESTION_FOOTER as PI_QUESTION_FOOTER,
+    parse_pi_ui,
+)
 
 
 def _pi_sessions_dir() -> Path:
-    return Path.home() / ".pi" / "agent" / "sessions"
+    agent_dir = os.environ.get("PI_CODING_AGENT_DIR")
+    root = Path(agent_dir) if agent_dir else Path.home() / ".pi" / "agent"
+    return root / "sessions"
 
 
 # Cap transcript age when the pane is dead — guards against picking up an
@@ -92,6 +97,7 @@ class PiProvider(JsonlProvider):
         name="pi",
         launch_command="pi",
         supports_hook=True,
+        hook_install_managed_by_ccgram=True,
         supports_resume=True,
         supports_continue=True,
         supports_structured_transcript=True,
@@ -102,7 +108,17 @@ class PiProvider(JsonlProvider):
         # Pickers verified by sending each command to a live pi process and
         # inspecting tmux capture-pane output (see PR #93 follow-up).
         tui_picker_commands=frozenset(
-            {"model", "login", "fork", "clone", "scoped-models", "settings"}
+            {
+                "model",
+                "thinking",
+                "login",
+                "logout",
+                "fork",
+                "clone",
+                "scoped-models",
+                "settings",
+                "tree",
+            }
         ),
     )
 
@@ -128,33 +144,8 @@ class PiProvider(JsonlProvider):
         *,
         pane_title: str = "",  # noqa: ARG002 — protocol signature
     ) -> StatusUpdate | None:
-        """Recognize the verified cc-thingz single-select question UI only."""
-        lines = re.sub(r"\x1b\[[0-9;]*m", "", pane_text).splitlines()
-        footer = next(
-            (
-                i
-                for i in range(len(lines) - 1, -1, -1)
-                if lines[i].strip() == PI_QUESTION_FOOTER
-            ),
-            None,
-        )
-        if footer is None:
-            return None
-        start = next(
-            (i for i in range(footer - 1, -1, -1) if set(lines[i].strip()) == {"─"}),
-            None,
-        )
-        if start is None:
-            return None
-        body = lines[start + 1 : footer + 1]
-        if not any(re.match(r"^\s*→\s+\d+\.\s", line) for line in body):
-            return None
-        return StatusUpdate(
-            raw_text="\n".join(body).strip(),
-            display_label="AskUserQuestion",
-            is_interactive=True,
-            ui_type="AskUserQuestion",
-        )
+        """Recognize Pi's current selectors and cc-thingz question menu."""
+        return parse_pi_ui(pane_text)
 
     # ── Discovery ────────────────────────────────────────────────────────
 

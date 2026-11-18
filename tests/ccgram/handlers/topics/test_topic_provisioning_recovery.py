@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from telegram.error import BadRequest, RetryAfter
@@ -7,14 +7,40 @@ from telegram.error import BadRequest, RetryAfter
 from ccgram.handlers.topics.topic_provisioning_recovery import (
     recover_topic_provisioning,
 )
+from ccgram.multiplexer.base import WindowRef
+from ccgram.providers import _ensure_registered
 from ccgram.telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS
 from ccgram.thread_router import ThreadRouter
+
+
+@pytest.fixture(autouse=True)
+def _isolated_window_state_owner():
+    from ccgram.window_state_store import (
+        WindowStateStore,
+        get_window_store,
+        install_window_store,
+    )
+
+    previous = get_window_store()
+    store = WindowStateStore(
+        schedule_save=lambda: None, on_hookless_provider_switch=lambda _wid: None
+    )
+    install_window_store(store)
+    try:
+        yield
+    finally:
+        install_window_store(previous)
 
 
 def _adapter() -> MagicMock:
     adapter = MagicMock()
     adapter.resolve = AsyncMock(
-        return_value=(SimpleNamespace(foreground_argv=("claude",)), None)
+        return_value=(
+            SimpleNamespace(
+                foreground_argv=("claude",), provider="claude", available=True
+            ),
+            None,
+        )
     )
     return adapter
 
@@ -34,6 +60,7 @@ def _restored_claim(*, target_id="@2", thread_id=42, previous_target_id=None):
         target_id=target_id,
         previous_target_id=previous_target_id,
         kind="topic_for_target" if thread_id is None else "target_for_topic",
+        topic_mark_owner="owner:" + target_id if target_id else None,
     )
     restored = _router()
     restored.from_dict(original.to_dict())
@@ -42,9 +69,33 @@ def _restored_claim(*, target_id="@2", thread_id=42, previous_target_id=None):
 
 @pytest.fixture(autouse=True)
 def _isolate_persistence():
+    _ensure_registered()
     with (
         patch("ccgram.handlers.topics.topic_provisioning_recovery.session_manager"),
+        patch("ccgram.session.session_manager"),
+        patch(
+            "ccgram.multiplexer.multiplexer",
+            new=SimpleNamespace(
+                capabilities=SimpleNamespace(name="tmux"),
+                find_window_by_id=AsyncMock(
+                    side_effect=lambda wid: SimpleNamespace(
+                        window_id=wid,
+                        topic_markable=True,
+                        topic_eligible=True,
+                        topic_mark_owner="owner:" + wid,
+                        topic_marked=True,
+                    )
+                ),
+                set_topic_mark=AsyncMock(return_value=True),
+            ),
+        ) as native,
+        patch("ccgram.handlers.topics.topic_provisioning_recovery.multiplexer", native),
+        patch("ccgram.handlers.topics.topic_orchestration.tmux_manager", native),
         patch("ccgram.handlers.topics.topic_deletion.session_manager"),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_query.get_window_provider",
+            return_value="claude",
+        ),
         patch(
             "ccgram.handlers.topics.topic_provisioning_recovery.clear_topic_state",
             new_callable=AsyncMock,
@@ -55,6 +106,125 @@ def _isolate_persistence():
         ),
     ):
         yield
+
+
+@pytest.mark.parametrize("mode", ["auto", "marked"])
+@pytest.mark.parametrize("kind", ["topic_for_target", "target_for_topic"])
+async def test_reloaded_second_chat_claim_keeps_original_owner_after_bound_chat_observes_replacement(
+    monkeypatch, mode, kind
+):
+    from ccgram.config import config
+    from ccgram.window_state_ports import lifecycle_state
+
+    monkeypatch.setattr(config, "topic_discovery_mode", mode)
+    original = _router()
+    original.bind_thread(1, 11, "@2", chat_id=-101)
+    claim = original.begin_topic_provisioning(
+        1,
+        -100,
+        thread_id=42,
+        target_id="@2",
+        kind=kind,
+        topic_mark_owner="original-O",
+    )
+    lifecycle_state.record_topic_mark_owner("@2", "original-O")
+    lifecycle_state.observe_topic_mark_owner("@2", "replacement-P")
+    restored = _router()
+    restored.from_dict(original.to_dict())
+    native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
+        find_window_by_id=AsyncMock(
+            return_value=WindowRef(
+                "@2",
+                "replacement",
+                "/p",
+                topic_marked=True,
+                topic_mark_owner="replacement-P",
+            )
+        ),
+        set_topic_mark=AsyncMock(return_value=True),
+    )
+    client = AsyncMock()
+    with (
+        patch("ccgram.handlers.topics.topic_provisioning_recovery.multiplexer", native),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            AsyncMock(return_value=True),
+        ),
+    ):
+        assert await recover_topic_provisioning(
+            client, router=restored, adapter=_adapter()
+        ) == {"unresolved": 1}
+    assert restored.get_window_for_chat_thread(-101, 11) == "@2"
+    assert restored.get_window_for_chat_thread(-100, 42) is None
+    retained = restored.get_topic_provisioning(claim.claim_id)
+    assert retained is not None and retained.topic_mark_owner == "original-O"
+    assert lifecycle_state.get_topic_mark_owner("@2") == "replacement-P"
+    native.set_topic_mark.assert_not_awaited()
+    client.delete_forum_topic.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mode", ["auto", "marked"])
+@pytest.mark.parametrize("kind", ["topic_for_target", "target_for_topic"])
+@pytest.mark.parametrize("topic_present", [True, False])
+async def test_recovery_rechecks_automatic_eligibility_without_filtering_explicit_creation(
+    monkeypatch, mode, kind, topic_present
+):
+    from ccgram.config import config
+    from ccgram.window_state_ports import lifecycle_state
+
+    monkeypatch.setattr(config, "topic_discovery_mode", mode)
+    original = _router()
+    claim = original.begin_topic_provisioning(
+        1,
+        -100,
+        thread_id=42,
+        target_id="@2",
+        kind=kind,
+        topic_mark_owner="original-O",
+    )
+    restored = _router()
+    restored.from_dict(original.to_dict())
+    lifecycle_state.record_topic_mark_owner("@2", "original-O")
+    native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
+        find_window_by_id=AsyncMock(
+            return_value=WindowRef(
+                "@2",
+                "excluded",
+                "/p",
+                topic_eligible=False,
+                topic_marked=True,
+                topic_mark_owner="original-O",
+            )
+        ),
+        set_topic_mark=AsyncMock(return_value=True),
+    )
+    with (
+        patch("ccgram.handlers.topics.topic_provisioning_recovery.multiplexer", native),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            AsyncMock(return_value=topic_present),
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.create_topic_in_chat",
+            AsyncMock(return_value=True),
+        ) as creator,
+    ):
+        result = await recover_topic_provisioning(
+            AsyncMock(), router=restored, adapter=_adapter()
+        )
+    if kind == "topic_for_target":
+        assert result == {"unresolved": 1}
+        assert restored.iter_topic_provisionings() == [claim]
+        creator.assert_not_awaited()
+    else:
+        assert result == ({"bound": 1} if topic_present else {"recreated": 1})
+    native.set_topic_mark.assert_not_awaited()
 
 
 @pytest.mark.parametrize("presence", [True, False, None])
@@ -87,6 +257,210 @@ async def test_restored_known_topic_follows_authoritative_presence(presence):
         assert outcome == {"unresolved": 1}
         assert router.iter_topic_provisionings() == [claim]
         client.delete_forum_topic.assert_not_awaited()
+
+
+async def test_marked_explicit_creation_recovers_only_after_verified_selection(
+    monkeypatch,
+):
+    from ccgram.config import config
+    from ccgram.window_state_ports import lifecycle_state
+
+    monkeypatch.setattr(config, "topic_discovery_mode", "marked", raising=False)
+    router, claim = _restored_claim()
+    lifecycle_state.set_topic_selection(
+        "@2", detached=False, pending=True, owner="owner:@2"
+    )
+    client = AsyncMock()
+    native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
+        find_window_by_id=AsyncMock(
+            return_value=SimpleNamespace(
+                window_id="@2",
+                topic_markable=True,
+                topic_eligible=True,
+                topic_mark_owner="owner:" + "@2",
+                topic_marked=True,
+            )
+        ),
+        set_topic_mark=AsyncMock(return_value=False),
+    )
+    with (
+        patch("ccgram.multiplexer.multiplexer", native),
+        patch("ccgram.handlers.topics.topic_provisioning_recovery.multiplexer", native),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        assert await recover_topic_provisioning(
+            client, router=router, adapter=_adapter()
+        ) == {"unresolved": 1}
+        assert router.get_window_for_chat_thread(-100, 42) is None
+        assert router.iter_topic_provisionings() == [claim]
+        assert lifecycle_state.get_pending_topic_mark("@2") is True
+        native.set_topic_mark.return_value = True
+        assert await recover_topic_provisioning(
+            client, router=router, adapter=_adapter()
+        ) == {"bound": 1}
+
+    assert router.get_window_for_chat_thread(-100, 42) == "@2"
+    assert lifecycle_state.get_pending_topic_mark("@2") is None
+
+
+@pytest.mark.parametrize(
+    "owner,marked,expected",
+    [
+        ("original-owner", True, "bound"),
+        ("other-terminal-owner", True, "unresolved"),
+        ("original-owner", False, "unresolved"),
+        (None, True, "unresolved"),
+    ],
+)
+async def test_automatic_claim_recovery_requires_saved_native_owner_without_marking(
+    monkeypatch, owner, marked, expected
+):
+    from ccgram.config import config
+    from ccgram.window_state_ports import lifecycle_state
+
+    monkeypatch.setattr(config, "topic_discovery_mode", "marked")
+    original = _router()
+    claim = original.begin_topic_provisioning(
+        1,
+        -100,
+        target_id="@2",
+        kind="topic_for_target",
+        topic_mark_owner="original-owner",
+    )
+    original.attach_provisioning_topic(claim.claim_id, 42)
+    router = _router()
+    router.from_dict(original.to_dict())
+    lifecycle_state.record_topic_mark_owner("@2", "original-owner")
+    native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
+        find_window_by_id=AsyncMock(
+            return_value=SimpleNamespace(
+                window_id="@2",
+                topic_markable=True,
+                topic_eligible=True,
+                topic_mark_owner=owner,
+                topic_marked=marked,
+            )
+        ),
+        set_topic_mark=AsyncMock(return_value=True),
+    )
+    with (
+        patch("ccgram.multiplexer.multiplexer", native),
+        patch("ccgram.handlers.topics.topic_provisioning_recovery.multiplexer", native),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        assert await recover_topic_provisioning(
+            AsyncMock(), router=router, adapter=_adapter()
+        ) == {expected: 1}
+    native.set_topic_mark.assert_not_awaited()
+    assert lifecycle_state.get_topic_mark_owner("@2") == "original-owner"
+
+
+@pytest.mark.parametrize("kind", ["target_for_topic", "topic_for_target"])
+@pytest.mark.parametrize(
+    "saved_owner",
+    [None, "saved-owner"],
+    ids=["initially-unknown", "known-witness-lost"],
+)
+async def test_auto_recovery_waits_for_a_lost_known_owner_but_not_initial_unknown(
+    monkeypatch,
+    kind,
+    saved_owner,
+):
+    from ccgram.config import config
+    from ccgram.window_state_ports import lifecycle_state
+
+    monkeypatch.setattr(config, "topic_discovery_mode", "auto")
+    original = _router()
+    original.begin_topic_provisioning(
+        1, -100, target_id="@2", thread_id=42, kind=kind, topic_mark_owner=saved_owner
+    )
+    router = _router()
+    router.from_dict(original.to_dict())
+    lifecycle_state.record_topic_mark_owner("@2", saved_owner)
+    native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
+        find_window_by_id=AsyncMock(
+            return_value=SimpleNamespace(
+                window_id="@2",
+                topic_markable=True,
+                topic_eligible=True,
+                topic_mark_owner=None,
+                topic_marked=None,
+            )
+        ),
+        set_topic_mark=AsyncMock(return_value=True),
+    )
+    with (
+        patch("ccgram.multiplexer.multiplexer", native),
+        patch("ccgram.handlers.topics.topic_provisioning_recovery.multiplexer", native),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        claims_before = router.iter_topic_provisionings()
+        assert await recover_topic_provisioning(
+            AsyncMock(), router=router, adapter=_adapter()
+        ) == ({"bound": 1} if saved_owner is None else {"unresolved": 1})
+        if saved_owner is not None:
+            assert router.get_window_for_chat_thread(-100, 42) is None
+            assert router.iter_topic_provisionings() == claims_before
+            assert lifecycle_state.get_topic_mark_owner("@2") == saved_owner
+            native.find_window_by_id.return_value.topic_mark_owner = saved_owner
+            assert await recover_topic_provisioning(
+                AsyncMock(), router=router, adapter=_adapter()
+            ) == {"bound": 1}
+        assert router.get_window_for_chat_thread(-100, 42) == "@2"
+    native.set_topic_mark.assert_not_awaited()
+    assert lifecycle_state.get_topic_mark_owner("@2") == saved_owner
+
+
+async def test_detached_stale_creation_claim_never_remarks_terminal(monkeypatch):
+    from ccgram.config import config
+    from ccgram.window_state_ports import lifecycle_state
+
+    monkeypatch.setattr(config, "topic_discovery_mode", "marked")
+    router, _claim = _restored_claim()
+    lifecycle_state.set_topic_selection(
+        "@2", detached=True, pending=None, owner="owner:@2"
+    )
+    native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
+        find_window_by_id=AsyncMock(
+            return_value=SimpleNamespace(
+                window_id="@2",
+                topic_markable=True,
+                topic_eligible=True,
+                topic_mark_owner="owner:@2",
+                topic_marked=False,
+            )
+        ),
+        set_topic_mark=AsyncMock(return_value=True),
+    )
+    with (
+        patch("ccgram.multiplexer.multiplexer", native),
+        patch("ccgram.handlers.topics.topic_provisioning_recovery.multiplexer", native),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        assert await recover_topic_provisioning(
+            AsyncMock(), router=router, adapter=_adapter()
+        ) == {"unresolved": 1}
+    native.set_topic_mark.assert_not_awaited()
 
 
 async def test_title_repair_rate_limit_retains_claim_then_stops_batch():
@@ -182,6 +556,7 @@ async def test_deleted_topic_is_unbound_and_recreated_for_live_target():
         user_id,
         propagate_retry_after,
         claim_id,
+        automatic,
     ):
         router.attach_provisioning_topic(claim_id, 77)
         return router.commit_topic_provisioning(claim_id, window_name=topic_name)
@@ -218,6 +593,7 @@ async def test_deleted_topic_is_unbound_and_recreated_for_live_target():
         user_id=1,
         propagate_retry_after=True,
         claim_id=claim.claim_id,
+        automatic=False,
     )
 
 
@@ -235,6 +611,7 @@ async def test_deleted_topic_recreation_uses_cached_window_name():
         user_id,
         propagate_retry_after,
         claim_id,
+        automatic,
     ):
         return True
 
@@ -266,6 +643,7 @@ async def test_deleted_topic_recreation_uses_cached_window_name():
         user_id=1,
         propagate_retry_after=True,
         claim_id=claim.claim_id,
+        automatic=False,
     )
 
 
@@ -405,46 +783,6 @@ async def test_hookless_agent_unknown_probe_also_holds_the_claim():
     assert router.iter_topic_provisionings() == [claim]
 
 
-async def test_hookless_agent_past_the_grace_settles_instead_of_leaking():
-    """A CLI that never starts must not quarantine the claim forever."""
-    router, claim = _restored_claim()
-    client = AsyncMock()
-    provider = MagicMock()
-    provider.capabilities.supports_hook = False
-    provider.capabilities.chat_first_command_path = False
-    with (
-        patch(
-            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
-            new_callable=AsyncMock,
-            return_value=True,
-        ),
-        patch(
-            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
-            new_callable=AsyncMock,
-            return_value=True,
-        ),
-        patch(
-            "ccgram.handlers.topics.topic_provisioning_recovery.window_query.get_window_provider",
-            return_value="antigravity",
-        ),
-        patch("ccgram.providers.registry.registry.get", return_value=provider),
-        patch(
-            "ccgram.handlers.topics.topic_provisioning_recovery.agent_process_started",
-            new_callable=AsyncMock,
-            return_value=False,
-        ),
-        patch(
-            "ccgram.handlers.topics.topic_provisioning_recovery.time.time",
-            return_value=claim.created_at + 181.0,
-        ),
-    ):
-        assert await recover_topic_provisioning(
-            client, router=router, adapter=_adapter()
-        ) == {"bound": 1}
-
-    assert router.get_window_for_chat_thread(-100, 42) == "@2"
-
-
 async def test_hookless_agent_in_shell_commits_once_the_cli_took_over():
     router, _claim = _restored_claim()
     client = AsyncMock()
@@ -477,41 +815,6 @@ async def test_hookless_agent_in_shell_commits_once_the_cli_took_over():
             client, router=router, adapter=_adapter()
         ) == {"bound": 1}
 
-    assert router.get_window_for_chat_thread(-100, 42) == "@2"
-
-
-async def test_hook_provider_skips_the_pane_probe():
-    router, _claim = _restored_claim()
-    client = AsyncMock()
-    provider = MagicMock()
-    provider.capabilities.supports_hook = True
-    provider.capabilities.chat_first_command_path = False
-    with (
-        patch(
-            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
-            new_callable=AsyncMock,
-            return_value=True,
-        ),
-        patch(
-            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
-            new_callable=AsyncMock,
-            return_value=True,
-        ),
-        patch(
-            "ccgram.handlers.topics.topic_provisioning_recovery.window_query.get_window_provider",
-            return_value="claude",
-        ),
-        patch("ccgram.providers.registry.registry.get", return_value=provider),
-        patch(
-            "ccgram.handlers.topics.topic_provisioning_recovery.agent_process_started",
-            new_callable=AsyncMock,
-        ) as started,
-    ):
-        assert await recover_topic_provisioning(
-            client, router=router, adapter=_adapter()
-        ) == {"bound": 1}
-
-    started.assert_not_awaited()
     assert router.get_window_for_chat_thread(-100, 42) == "@2"
 
 
@@ -808,6 +1111,7 @@ async def test_recreation_flush_failure_releases_ownership_for_later_retry():
         user_id,
         propagate_retry_after,
         claim_id,
+        automatic,
     ):
         router.attach_provisioning_topic(claim_id, 77)
         return router.commit_topic_provisioning(claim_id)
@@ -895,3 +1199,213 @@ async def test_recovery_restores_recorded_title_without_probe_messages():
     )
     client.send_message.assert_not_awaited()
     client.delete_message.assert_not_awaited()
+
+
+@pytest.mark.parametrize("supports_hook", [True, False])
+@pytest.mark.parametrize("age", [30, 181])
+@pytest.mark.parametrize(
+    ("argv", "foreground_provider"),
+    [((), "claude"), (("-zsh",), "shell"), (("codex",), "codex")],
+)
+async def test_hook_registration_cannot_commit_without_matching_foreground(
+    age, argv, foreground_provider, supports_hook
+):
+    router, claim = _restored_claim()
+    client = AsyncMock()
+    adapter = _adapter()
+    adapter.resolve.return_value = (
+        SimpleNamespace(
+            foreground_argv=argv, provider=foreground_provider, available=True
+        ),
+        None,
+    )
+    provider = SimpleNamespace(
+        capabilities=SimpleNamespace(
+            supports_hook=supports_hook, chat_first_command_path=False
+        )
+    )
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_query.get_window_provider",
+            return_value="claude",
+        ),
+        patch("ccgram.providers.registry.registry.get", return_value=provider),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.time.time",
+            return_value=claim.created_at + age,
+        ),
+    ):
+        assert await recover_topic_provisioning(
+            client, router=router, adapter=adapter
+        ) == {"unresolved": 1}
+        assert router.iter_topic_provisionings() == [claim]
+        assert router.get_window_for_chat_thread(-100, 42) is None
+        client.delete_forum_topic.assert_not_awaited()
+
+        adapter.resolve.return_value = (
+            SimpleNamespace(
+                foreground_argv=("claude",), provider="claude", available=True
+            ),
+            None,
+        )
+        assert await recover_topic_provisioning(
+            client, router=router, adapter=adapter
+        ) == {"bound": 1}
+
+    assert router.get_window_for_chat_thread(-100, 42) == "@2"
+    assert not router.iter_topic_provisionings()
+
+
+async def test_recovery_without_provider_identity_remains_quarantined():
+    router, claim = _restored_claim()
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_query.get_window_provider",
+            return_value=None,
+        ),
+    ):
+        outcome = await recover_topic_provisioning(
+            AsyncMock(), router=router, adapter=_adapter()
+        )
+    assert outcome == {"unresolved": 1}
+    assert router.iter_topic_provisionings() == [claim]
+    assert router.get_window_for_chat_thread(-100, 42) is None
+
+
+@pytest.mark.parametrize("retry", [False, True])
+@pytest.mark.parametrize(
+    ("argv", "provider", "available"),
+    [
+        ((), "claude", True),
+        (("-zsh",), "shell", True),
+        (("codex",), "codex", True),
+        (("claude",), "claude", False),
+    ],
+)
+async def test_deleted_topic_waits_for_ready_agent_before_recreation(
+    retry, argv, provider, available
+):
+    router, claim = _restored_claim(previous_target_id="@dead" if not retry else None)
+    if retry:
+        prepared = router.prepare_topic_recreation(claim.claim_id)
+        router.defer_topic_recreation(prepared.claim_id, retry_at=0.0, uncertain=False)
+        saved = router.to_dict()
+        router = _router()
+        router.from_dict(saved)
+        claim = router.iter_topic_provisionings()[0]
+    adapter = _adapter()
+    adapter.resolve.return_value = (
+        SimpleNamespace(foreground_argv=argv, provider=provider, available=available),
+        None,
+    )
+
+    async def create(
+        _client,
+        _chat_id,
+        _target_id,
+        topic_name,
+        *,
+        user_id,
+        propagate_retry_after,
+        claim_id,
+        automatic,
+    ):
+        router.attach_provisioning_topic(claim_id, 77)
+        return router.commit_topic_provisioning(claim_id, window_name=topic_name)
+
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.create_topic_in_chat",
+            side_effect=create,
+        ) as create_topic,
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.clear_topic_state",
+            new_callable=AsyncMock,
+        ) as clear,
+    ):
+        assert await recover_topic_provisioning(
+            AsyncMock(), router=router, adapter=adapter
+        ) == {"unresolved": 1}
+        assert router.iter_topic_provisionings() == [claim]
+        create_topic.assert_not_awaited()
+        clear.assert_not_awaited()
+
+        adapter.resolve.return_value = (
+            SimpleNamespace(
+                foreground_argv=("claude",), provider="claude", available=True
+            ),
+            None,
+        )
+        assert await recover_topic_provisioning(
+            AsyncMock(), router=router, adapter=adapter
+        ) == {"recreated": 1}
+
+    create_topic.assert_awaited_once()
+    if retry:
+        clear.assert_not_awaited()
+    else:
+        clear.assert_awaited_once_with(
+            1, 42, client=ANY, window_id="@dead", chat_id=-100, window_dead=False
+        )
+    assert router.get_window_for_chat_thread(-100, 42) is None
+    assert router.get_window_for_chat_thread(-100, 77) == "@2"
+    assert not router.iter_topic_provisionings()
+
+
+async def test_recreation_readiness_probe_cannot_commit_changed_claim():
+    router, claim = _restored_claim()
+    adapter = _adapter()
+
+    async def resolve(_window_id):
+        router.attach_provisioning_target(claim.claim_id, "@3")
+        return SimpleNamespace(
+            foreground_argv=("claude",), provider="claude", available=True
+        ), None
+
+    adapter.resolve.side_effect = resolve
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.create_topic_in_chat",
+            new_callable=AsyncMock,
+        ) as create,
+    ):
+        assert await recover_topic_provisioning(
+            AsyncMock(), router=router, adapter=adapter
+        ) == {"changed": 1}
+    create.assert_not_awaited()
+    assert router.iter_topic_provisionings()[0].target_id == "@3"

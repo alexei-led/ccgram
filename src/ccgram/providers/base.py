@@ -68,6 +68,22 @@ class AgentMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class TerminalControl:
+    """A verified native key action, independent of any remote UI layout."""
+
+    label: str
+    keys: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalMenu:
+    """Controls supported by one verified command menu in the active terminal."""
+
+    controls: tuple[TerminalControl, ...]
+    text_input: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class StatusUpdate:
     """Parsed terminal status line from the agent's pane.
 
@@ -89,6 +105,8 @@ class StatusUpdate:
     # anchor: the keyboard may be shown, but it must not latch the
     # blocking interactive mode.
     ui_advisory: bool = False
+    # Only verified command menus opt in; guesses and ordinary output stay out.
+    menu: TerminalMenu | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +136,21 @@ class HookEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class FirstRunPrompt:
+    """A blocking first-run screen a launch has to clear without a human.
+
+    ``needles`` must ALL appear (case-insensitive) in the captured pane
+    before ``keys`` are sent; ``settled`` is a substring that proves the
+    prompt is gone. Matching is exact-substring on purpose: a fuzzy match
+    would send keys into an unrelated screen.
+    """
+
+    needles: tuple[str, ...]
+    keys: tuple[str, ...]
+    settled: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderCapabilities:
     """Declares what features a provider supports.
 
@@ -132,7 +165,7 @@ class ProviderCapabilities:
     supports_resume_picker: bool = False
     supports_continue: bool = False
     supports_structured_transcript: bool = False
-    supports_incremental_read: bool = True  # False → whole-file JSON (e.g. Gemini)
+    supports_incremental_read: bool = True  # False → whole-document file
     uses_pane_title: bool = False  # Provider reads OSC pane title for status
     # True only for providers whose terminal chrome matches Claude Code's
     # UI_PATTERNS + ─-separator status block, so the shared pyte fast-path
@@ -161,6 +194,10 @@ class ProviderCapabilities:
     # pointing at /toolbar so users know how to drive the picker from
     # Telegram. Empty for providers without modal pickers.
     tui_picker_commands: frozenset[str] = frozenset()
+    # First-run approval/trust screen this agent shows before its prompt.
+    # None means "no recipe": the launcher then reports the block instead of
+    # guessing at keys.
+    first_run: FirstRunPrompt | None = None
 
 
 # ── Provider protocol ────────────────────────────────────────────────────

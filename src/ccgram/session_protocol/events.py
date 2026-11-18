@@ -82,6 +82,7 @@ class EventHub:
         self.queue_capacity = queue_capacity
         self.clock = clock
         self._ring: deque[tuple[float, Event]] = deque()
+        self._gap_seq: int | None = None
         self._subscribers: set[Subscription] = set()
         self._durable_consumers: dict[str, Callable[[Any], Awaitable[None]]] = {}
 
@@ -135,15 +136,32 @@ class EventHub:
             subscriber.offer(event)
         return event
 
+    def mark_gap(self) -> None:
+        """Record that message events stopped being published at the current seq.
+
+        A resume at or before this point cannot replay exactly, so it fails and
+        the client reloads its snapshots and history.
+        """
+        self._gap_seq = self.seq
+
     def replay(self, epoch: str, seq: int) -> tuple[bool, list[Event]]:
         self._prune()
         if epoch != self.epoch or seq < 0 or seq > self.seq:
+            return False, []
+        if self._gap_seq is not None and seq <= self._gap_seq:
             return False, []
         if seq == self.seq:
             return True, []
         if not self._ring or seq < (self._ring[0][1].seq or 0) - 1:
             return False, []
         return True, [event for _, event in self._ring if (event.seq or 0) > seq]
+
+    def has_subscriber(self, session_id: str) -> bool:
+        """Whether a live subscription receives events for this session."""
+        return any(
+            subscriber.session_ids is None or session_id in subscriber.session_ids
+            for subscriber in self._subscribers
+        )
 
     def subscribe(self, session_ids: Collection[str] | None = None) -> Subscription:
         subscriber = Subscription(session_ids, self.queue_capacity)

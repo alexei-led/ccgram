@@ -1,4 +1,5 @@
 import ast
+import asyncio
 import inspect
 from contextlib import contextmanager
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
@@ -7,6 +8,8 @@ import pytest
 from telegram import Bot
 from telegram.error import TelegramError
 
+from ccgram.event_stream_monitor import EventStreamMonitor
+from ccgram.multiplexer.base import MuxEvent
 from ccgram.handlers.polling import window_tick
 from ccgram.handlers.polling.polling_state import (
     interactive_strategy,
@@ -818,6 +821,49 @@ class TestDeadWindowTopicDeleted:
 
         presence.assert_awaited_once()
         bot.delete_forum_topic.assert_awaited_once()
+
+    async def test_concurrent_push_and_poll_share_death_guard(self):
+        bot = AsyncMock(spec=Bot)
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        router.bind_thread(1, 100, "@0", chat_id=42)
+        probing = asyncio.Event()
+        release = asyncio.Event()
+
+        async def presence(*_args):
+            probing.set()
+            await release.wait()
+            return False
+
+        async def on_window_died(wid):
+            await _handle_dead_window_notification(bot, 1, 100, wid)
+
+        monitor = EventStreamMonitor(lambda: {"@0"}, on_window_died=on_window_died)
+        with (
+            patch("ccgram.handlers.polling.window_tick.apply.thread_router", router),
+            patch(
+                "ccgram.handlers.polling.window_tick.apply.window_presence",
+                side_effect=presence,
+            ),
+            patch(
+                "ccgram.handlers.polling.window_tick.apply.retire_topic_binding",
+                new_callable=AsyncMock,
+                return_value="deleted",
+            ) as retire_binding,
+        ):
+            push = asyncio.create_task(monitor._dispatch(MuxEvent("window_died", "@0")))
+            try:
+                await asyncio.wait_for(probing.wait(), timeout=1)
+                await _handle_dead_window_notification(bot, 1, 100, "@0")
+            finally:
+                release.set()
+                await push
+
+        retire_binding.assert_awaited_once()
+        assert retire_binding.await_args is not None
+        assert retire_binding.await_args.kwargs["chat_id"] == 42
 
     async def test_same_window_in_two_chats_deletes_each_binding(self):
         bot = AsyncMock(spec=Bot)

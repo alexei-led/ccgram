@@ -1,0 +1,45 @@
+
+ ▀▀█  v1.4.0
+ █▀ █ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+
+[Context]
+  ~/.pi/agent/AGENTS.md
+
+[Extensions]
+  ccgram-pi-ui-test.mjs
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Non-secret test editor
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+First line
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ enter submit  shift+enter/ctrl+j newline  escape/ctrl+c cancel  ctrl+g external editor
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+/private/tmp
+0.0%/1.0M (auto)                                                               deepseek-flash • high

@@ -1,0 +1,9 @@
+Configure Status Line
+Select which items to display in the status line.
+
+zzzz-not-a-setting
+
+no matches
+
+<status preview>
+space toggle · ←/→ reorder · enter save · esc cancel

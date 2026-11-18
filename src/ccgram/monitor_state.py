@@ -34,11 +34,17 @@ class TrackedSession:
     file_path: str  # Path to .jsonl file
     last_byte_offset: int = 0  # Delivered watermark (persisted)
     parsed_offset: int = -1  # In-memory parse position (-1 = follow watermark)
+    source_generation: int = 0
+    source_identity: tuple[int, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for JSON serialization (delivered watermark only)."""
         d = asdict(self)
         d.pop("parsed_offset", None)
+        if not self.source_generation:
+            d.pop("source_generation")
+        if self.source_identity is None:
+            d.pop("source_identity")
         return d
 
     @classmethod
@@ -48,6 +54,10 @@ class TrackedSession:
             session_id=data.get("session_id", ""),
             file_path=data.get("file_path", ""),
             last_byte_offset=data.get("last_byte_offset", 0),
+            source_generation=data.get("source_generation", 0),
+            source_identity=tuple(data["source_identity"])
+            if data.get("source_identity") is not None
+            else None,
         )
 
 

@@ -5,7 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 
 from ccgram import bootstrap
+from ccgram.event_stream_monitor import EventStreamMonitor
+from ccgram.multiplexer.base import MuxEvent
 from ccgram.session_protocol.models import ProtocolError
+from ccgram.state_writer_lock import STATE_WRITER_LEASE_KEY, StateWriterLease
 
 
 @pytest.fixture(autouse=True)
@@ -13,6 +16,14 @@ def _reset_bootstrap_state():
     bootstrap.reset_for_testing()
     yield
     bootstrap.reset_for_testing()
+
+
+@pytest.fixture
+def writer_lease(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    monkeypatch.setattr(bootstrap.config, "state_file", path)
+    with StateWriterLease(path) as lease:
+        yield lease
 
 
 def _make_app() -> MagicMock:
@@ -57,6 +68,33 @@ class TestBootstrapApplicationOrdering:
         assert instance.register_delivery_consumer.call_args.args[0] == "telegram"
         instance.set_message_callback.assert_not_called()
         assert bootstrap.session_monitor is instance
+
+
+class TestStartEventStream:
+    def test_unsupported_backend_does_not_start_monitor(self):
+        with (
+            patch("ccgram.bootstrap.multiplexer") as mux,
+            patch("ccgram.event_stream_monitor.EventStreamMonitor") as monitor,
+        ):
+            mux.capabilities.supports_event_stream = False
+            assert bootstrap.start_event_stream(_make_app()) is None
+
+        monitor.assert_not_called()
+
+    async def test_death_callback_awaits_public_telegram_entrypoint(self):
+        app = _make_app()
+        notify = AsyncMock()
+        with (
+            patch("ccgram.bootstrap.multiplexer") as mux,
+            patch.object(EventStreamMonitor, "start"),
+            patch("ccgram.handlers.polling.window_death.handle_window_death", notify),
+        ):
+            mux.capabilities.supports_event_stream = True
+            monitor = bootstrap.start_event_stream(app)
+            assert isinstance(monitor, EventStreamMonitor)
+            await monitor._dispatch(MuxEvent("window_died", "target"))
+
+        notify.assert_awaited_once_with(app.bot, "target")
 
 
 class TestEnsureMultiplexerSession:
@@ -159,8 +197,9 @@ class TestSettlePreexistingWindows:
 
 
 class TestBootstrapApplication:
-    async def test_runs_full_sequence_in_order(self):
+    async def test_runs_full_sequence_in_order(self, writer_lease):
         app = _make_app()
+        app.bot_data[STATE_WRITER_LEASE_KEY] = writer_lease
 
         order: list[str] = []
 
@@ -219,6 +258,14 @@ class TestBootstrapApplication:
                 side_effect=lambda: order.append("wire"),
             ),
             patch(
+                "ccgram.topic_mark_ipc.start_topic_mark_server",
+                new=AsyncMock(
+                    side_effect=lambda *_args: (
+                        order.append("marker_ipc") or SimpleNamespace(close=AsyncMock())
+                    )
+                ),
+            ) as start_marker,
+            patch(
                 "ccgram.bootstrap.start_session_monitor",
                 new=AsyncMock(
                     side_effect=lambda *_args, **_kwargs: order.append("monitor")
@@ -248,12 +295,16 @@ class TestBootstrapApplication:
             "hooks",
             "protocol",
             "recover_creation",
+            "marker_ipc",
             "monitor",
             "polling",
             "miniapp",
         ]
         assert app.bot_data["session_service"].hub == "shared-hub"
         start_monitor.assert_awaited_once_with(app, event_hub="shared-hub")
+        assert start_marker.await_args is not None
+        assert start_marker.await_args.args[0] is writer_lease
+        assert writer_lease.held
 
 
 class TestShutdownRuntime:

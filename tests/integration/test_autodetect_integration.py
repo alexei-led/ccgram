@@ -148,9 +148,14 @@ async def test_list_windows_skips_own_window(tmux, tmp_path, monkeypatch):
     assert agent_id in all_ids
     assert own_id in all_ids
 
-    from ccgram.config import config
-
-    monkeypatch.setattr(config, "own_window_id", own_id)
+    monkeypatch.setattr(tmux, "own_window_id", own_id)
     filtered_ids = [w.window_id for w in await tmux.list_windows()]
     assert agent_id in filtered_ids
     assert own_id not in filtered_ids
+    live = await tmux.list_windows_for_reconciliation()
+    assert live is not None
+    assert {agent_id, own_id} <= {window.window_id for window in live}
+    assert (
+        next(window for window in live if window.window_id == own_id).topic_eligible
+        is False
+    )

@@ -119,14 +119,14 @@ def test_pane_parse_target_herdr_no_internal_split() -> None:
     "data,expected_prefix,expected_window,expected_pane",
     [
         # window only
-        (f"{CB_ASK_ENTER}@12", CB_ASK_ENTER, "@12", None),
+        (f"{CB_ASK_ENTER}1:@12", CB_ASK_ENTER, "@12", None),
         # tmux: window + pane
-        (f"{CB_ASK_ENTER}@12{CB_PANE_DELIMITER}%5", CB_ASK_ENTER, "@12", "%5"),
+        (f"{CB_ASK_ENTER}1:@12{CB_PANE_DELIMITER}%5", CB_ASK_ENTER, "@12", "%5"),
         # herdr: tab only (colons in id must not split)
-        (f"{CB_ASK_ENTER}w2:t1", CB_ASK_ENTER, "w2:t1", None),
+        (f"{CB_ASK_ENTER}1:w2:t1", CB_ASK_ENTER, "w2:t1", None),
         # herdr: tab + pane
         (
-            f"{CB_ASK_ENTER}w2:t1{CB_PANE_DELIMITER}w2:p1",
+            f"{CB_ASK_ENTER}1:w2:t1{CB_PANE_DELIMITER}w2:p1",
             CB_ASK_ENTER,
             "w2:t1",
             "w2:p1",
@@ -149,7 +149,7 @@ def test_match_interactive_prefix(
 
 def test_match_interactive_prefix_herdr_bare_no_split() -> None:
     """herdr tab id ``w2:t1`` must parse as window_id without splitting on ':'."""
-    result = match_interactive_prefix(f"{CB_ASK_ENTER}w2:t1")
+    result = match_interactive_prefix(f"{CB_ASK_ENTER}1:w2:t1")
     assert result is not None
     _, window_id, pane_id = result
     assert window_id == "w2:t1"
@@ -324,3 +324,8 @@ def test_kb_prefix_target_herdr() -> None:
 )
 def test_64_byte_limit(data: str) -> None:
     assert len(data) <= 64, f"Exceeds 64 bytes ({len(data)}): {data!r}"
+
+
+@pytest.mark.parametrize("target", ["@12", "@12|%5", "w2:t1", "w2:t1|w2:p1"])
+def test_unsequenced_interactive_input_is_rejected(target):
+    assert match_interactive_prefix(f"{CB_ASK_ENTER}{target}") is None

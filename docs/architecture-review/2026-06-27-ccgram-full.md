@@ -658,8 +658,8 @@ Re-run on **archfit v0.12.1** (book-verbatim `bc_score.v3` scorer) with the Anth
 assist, after correcting the config. The original review above used v0.10; my calibrated
 architect scores (boundary 78, coupling 52, dep_health 52, cohesion 68, change_locality 58,
 fitness 85, analysis_confidence 85) still hold — the v0.12.1 deltas below are deterministic
-inputs to those, not replacements. For future scans, use `archfit check --config .archfit.yaml --full`
-for the full scan and `archfit check --config .archfit.yaml --base <ref>` for delta scans.
+inputs to those, not replacements. This is a historical Archfit 3 run record. Current Archfit 4 commands are documented in
+[`docs/architecture.md`](../architecture.md): `archfit check`, `archfit rules`, and `archfit can`.
 
 ### A.1 Config corrections (the design model is now right)
 
@@ -711,20 +711,18 @@ as a change_locality drop (−18, co-changed many modules at once) and a small c
 (new clone pairs). It added **no new import cycles, no boundary violations, no gate findings** —
 a clean cross-cutting feature that stayed within the seam contracts.
 
-### A.4 Architecture governance (implemented)
+### A.4 Architecture governance (historical: June 2026)
 
-The architecture intent is now executable as a fast gate plus an advisory whole-graph layer:
+The following records the Archfit 3 setup at the time of this review; it is superseded by the Archfit 4 migration:
 
 - **`make arch-guard`** — fast (~3s) reliable pytest F1–F6 boundary audits (planted-violation
   tests prove they bite). The authoritative drift gate.
 - **`make arch-check`** — archfit whole-graph gate (forbidden-dep + cycle + coupling), ~45s;
   blocks only on gate findings, warnings pass.
-- **`make arch-score` / `make arch-review`** — banded scorecard / LLM narrative for tracking
-  health and improvement over time.
+- Archfit 3 scorecard and LLM-summary targets were removed in the Archfit 4 migration. Use `archfit report` for the owner report.
 - **Pre-push hook** (`scripts/git-hooks/pre-push`, `core.hooksPath=scripts/git-hooks`) runs
   arch-guard + arch-check, scoped to src/.archfit changes so doc pushes stay instant.
-- **CI advisory job** (`.github/workflows/ci.yml` `architecture`, `continue-on-error`) installs
-  archfit + analyzers, runs the gate, and uploads the scorecard artifact.
+- The Archfit 3 CI advisory job and scorecard artifact were removed. The report-only v4 action is defined in `.github/workflows/archfit.yaml`.
 
 ### A.5 Where archfit failed (updated)
 

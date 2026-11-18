@@ -29,6 +29,15 @@ Tokens in query parameters are not accepted. Never log the pairing payload or to
    the server sends missed durable events through that boundary before live events.
 3. Send `subscribe` before loading snapshots or history. A fresh connection initially
    observes all sessions, including during replay, so there is no unsubscribed gap.
+   A resume succeeds only if no message events were lost since the cursor. Message
+   events are published to a session's subscribers for 300 seconds after their last
+   subscriber leaves. A reconnect within that window replays every message event
+   exactly, as long as the replay ring still holds them: it keeps at most 1,000
+   durable events (shared by all sessions) and at most 600 seconds of events. A
+   longer backlog or gap returns `resumed: false`, even inside the grace window.
+   After the grace window, the server stops publishing messages for that session and
+   marks the gap. Any resume at or before the gap returns `resumed: false`. Subscribing
+   again afterwards sends each current message as an upsert, so no message is missing.
 4. Load `/v1/sessions` and the open conversation's history on a fresh connection, a
    new epoch, or a failed resume. Refresh snapshots on every app foreground to remove
    requests that closed while the app was suspended.
@@ -68,6 +77,11 @@ do not replace the subscribe-before-history merge rule.
 that session's currently bound conversation. Cursors are opaque, scoped to both
 conversation and transcript generation, and invalid after source replacement.
 
+Message upserts are sent only to subscribers. A client that has not subscribed to a
+session gets its messages from history reads, which build the index on demand; a
+client that subscribes later receives the current messages as upserts. Do not rely
+on the replay buffer for messages published before you subscribed.
+
 Native transcript entry IDs are retained when first observed. Missing native IDs
 use UTF-8 byte offsets. A streamed Codex message keeps its first visible ID when
 the final response arrives.
@@ -79,8 +93,9 @@ produce higher revisions when the provider appends another version of the record
 `complete` reflects streaming completion. Optional `phase` preserves provider phase
 metadata, such as Codex `final_answer`. Clients can ignore phases they do not know.
 
-Generation checks and parsing use the same verified source bytes. A transcript
-replacement or truncation increments persisted `historyGeneration`.
+A transcript replacement or truncation increments persisted `historyGeneration`.
+A change that keeps the file identity, size, and last 4 KiB is not detected; the
+transcript is append-only in practice.
 Nonzero generations also change message IDs. On a changed `conversation.id` or
 `conversation.historyGeneration`, clear that conversation's cached messages and
 load its history again. `bindingVersion` also increases, invalidating queued input.

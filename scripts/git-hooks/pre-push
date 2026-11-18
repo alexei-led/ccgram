@@ -1,35 +1,52 @@
 #!/usr/bin/env bash
 # Architecture drift gate (pre-push).
 #
-# Runs only when the commits being pushed touch source or its architecture
-# config, so doc/test-only pushes stay instant:
-#   1. make arch-guard  — fast (~3s), comprehensive, reliable pytest boundary
-#                         audits (the authoritative drift gate).
-#   2. make arch-check  — archfit whole-graph gate (~45s): forbidden-dep + cycle
-#                         + coupling. Adds the cross-module view on top of (1).
-#
+# F1-F6 guard source/policy pushes. Policy proposal branches must pass candidate
+# validation; the required Archfit App gate still owns approval before merge.
+# Direct default-branch/tag policy changes cannot use that proposal path.
 # Installed via: git config --local core.hooksPath scripts/git-hooks
-# To skip ad hoc:  git push --no-verify   (or comment out the arch-check line).
 set -euo pipefail
 
 z40=0000000000000000000000000000000000000000
 need=0
+policy_changed=0
+proposal_only=1
+default_base=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+head=$(git rev-parse HEAD)
+if [ -z "$default_base" ] || [ "${1:-}" != origin ]; then
+  proposal_only=0
+fi
+default_ref="refs/heads/${default_base#origin/}"
 
-while read -r _local_ref local_sha _remote_ref remote_sha; do
-  [ "$local_sha" = "$z40" ] && continue # branch deletion — nothing to check
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$z40" ] && continue
+  case "$local_ref:$remote_ref" in
+  refs/heads/*:refs/heads/*)
+    if [ "$local_ref" = "$default_ref" ] || [ "$remote_ref" = "$default_ref" ]; then
+      proposal_only=0
+    fi
+    ;;
+  *) proposal_only=0 ;;
+  esac
+  [ "$local_sha" = "$head" ] || proposal_only=0
   if [ "$remote_sha" = "$z40" ]; then
-    # New branch on the remote: diff against the merge-base with origin's default
-    # branch when known, else check the pushed tip's tree.
-    base="$(git merge-base "$local_sha" origin/HEAD 2>/dev/null || true)"
+    base=$(git merge-base "$local_sha" origin/HEAD 2>/dev/null || true)
     range="${base:+$base..}$local_sha"
   else
     range="$remote_sha..$local_sha"
   fi
-  if git diff --name-only "$range" -- src .archfit.yaml | grep -q .; then
-    need=1
+  paths=$(git diff --name-only "$range" -- src .archfit.yaml)
+  [ -z "$paths" ] || need=1
+  if [ -n "$default_base" ]; then
+    policy_paths=$(git diff --name-only "$default_base" "$local_sha" -- .archfit.yaml)
+    [ -z "$policy_paths" ] || policy_changed=1
   fi
 done
 
+if [ "$policy_changed" = 1 ] && [ "$proposal_only" != 1 ]; then
+  echo "pre-push: policy changes require a checked-out feature branch and PR owner approval" >&2
+  exit 1
+fi
 if [ "$need" != 1 ]; then
   echo "pre-push: no src/.archfit.yaml changes — skipping architecture gate"
   exit 0
@@ -37,4 +54,14 @@ fi
 
 echo "pre-push: source changed — running architecture drift gate"
 make arch-guard
-make arch-check
+if [ "$policy_changed" = 1 ]; then
+  # Candidate validation must read exactly the source/policy being proposed.
+  if [ -n "$(git status --porcelain --untracked-files=all -- src .archfit.yaml)" ]; then
+    echo "pre-push: commit source/policy changes before proposing this policy" >&2
+    exit 1
+  fi
+  archfit check --policy .archfit.yaml
+  echo "pre-push: candidate passed; Archfit App owner approval is still required before merge"
+else
+  make arch-check
+fi

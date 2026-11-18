@@ -4,13 +4,13 @@ import json
 import threading
 import time
 from dataclasses import replace
+from pathlib import Path
 from tempfile import TemporaryFile
 from unittest.mock import AsyncMock
 
 import pytest
 
 from ccgram.providers.base import HookEvent
-from ccgram.session_protocol import service as service_module
 from ccgram.session_protocol.backend import Prompt
 from ccgram.session_protocol.requests import hook_input_hash
 from ccgram.session_protocol.runtime import ProtocolRuntime
@@ -44,18 +44,20 @@ async def test_obsolete_unmatched_resolution_preserves_newer_queued_evidence(
     session = (await service.list_sessions())[0]
     backend.current_prompt = Prompt("newer\n1. Yes\n2. No", "permission")
     await service.get_session(session.id)
-    read_entries = service_module.read_entries
+    with path.open("a") as stream:
+        stream.write(json.dumps({"type": "user", "uuid": "later"}) + "\n")
+    real_open = Path.open
     entered, release = asyncio.Event(), threading.Event()
     loop = asyncio.get_running_loop()
 
-    def delayed_read(source, provider):
-        if not release.is_set():
+    def delayed_open(source, *args, **kwargs):
+        if source == path and not release.is_set():
             loop.call_soon_threadsafe(entered.set)
             if not release.wait(5):
                 raise TimeoutError("test did not release transcript read")
-        return read_entries(source, provider)
+        return real_open(source, *args, **kwargs)
 
-    monkeypatch.setattr(service_module, "read_entries", delayed_read)
+    monkeypatch.setattr(Path, "open", delayed_open)
     monkeypatch.setattr(
         "ccgram.session_protocol.runtime.asyncio.sleep",
         AsyncMock(side_effect=asyncio.CancelledError),

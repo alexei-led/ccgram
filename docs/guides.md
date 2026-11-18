@@ -8,7 +8,7 @@ pipx upgrade ccgram                   # pipx
 brew upgrade ccgram                   # Homebrew
 ```
 
-Restart the running bot after upgrading, and check `ccgram --version`. If the bot runs from a development checkout, also upgrade the global executable used by agent hooks. A hook that invokes bare `ccgram` uses the agent's `PATH`, independently of the bot's installation; see [protocol compatibility](#protocol-version-pinning).
+Restart the running bot after upgrading, and check `ccgram --version`. The Telegram `/upgrade` command requests this restart automatically. If it reports that automatic restart is unavailable, restart the bot manually. If the bot runs from a development checkout, also upgrade the global executable used by agent hooks. A hook that invokes bare `ccgram` uses the agent's `PATH`, independently of the bot's installation; see [protocol compatibility](#protocol-version-pinning).
 
 ### Upgrading from 4.10 to 4.11
 
@@ -25,8 +25,10 @@ ccgram status                 # Show running state (no token needed)
 ccgram doctor                 # Validate setup and diagnose issues
 ccgram doctor --fix           # Auto-fix issues (install hook, kill orphans)
 ccgram hook --install         # Install Claude Code hooks
-ccgram hook --uninstall       # Remove all hooks
-ccgram hook --status          # Check per-event hook installation status
+ccgram hook --uninstall       # Remove Claude Code hooks
+ccgram hook --status          # Check Claude Code hook installation
+ccgram hook --provider pi --install  # Install Pi hooks (requires cc-thingz hook-runner)
+ccgram hook --provider pi --status   # Check Pi hook installation
 ccgram --version              # Show version
 ccgram -v                     # Run with debug logging
 ```
@@ -207,6 +209,7 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CLAUDE_CONFIG_DIR` / `--claude-config-dir`           | `~/.claude`                    | Override Claude config directory (for wrappers like ce, cc-mirror)                                   |
 | `TMUX_SESSION_NAME` / `--tmux-session`                | `ccgram`                       | tmux session name                                                                                    |
 | `CCGRAM_MULTIPLEXER`                                  | `tmux`                         | Terminal multiplexer backend: `tmux` (default), `herdr` or `agterm`                                  |
+| `CCGRAM_TOPIC_DISCOVERY` / `--topic-discovery`        | `auto`                         | Automatic topic admission: `auto` or [`marked`](#marked-only-discovery)                              |
 | `CCGRAM_AGTERM_WORKSPACES`                            | `ccgram`                       | agterm only: workspaces ccgram may adopt sessions from (comma-separated; `*` for all)                |
 | `CCGRAM_PROVIDER` / `--provider`                      | `claude`                       | Default agent provider (`claude`, `codex`, `gemini`, `pi`, `shell`)                                  |
 | `CCGRAM_<NAME>_COMMAND`                               | _(from provider)_              | Per-provider launch command (env only, see below)                                                    |
@@ -220,7 +223,7 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_WHISPER_BASE_URL` / `--whisper-base-url`      | _(provider default)_           | Custom OpenAI-compatible endpoint URL                                                                |
 | `CCGRAM_WHISPER_MODEL` / `--whisper-model`            | _(provider default)_           | Model override (e.g., `whisper-large-v3-turbo`)                                                      |
 | `CCGRAM_WHISPER_LANGUAGE` / `--whisper-language`      | _(auto-detect)_                | Force language code (e.g., `en`, `zh`)                                                               |
-| `CCGRAM_WHISPER_TIMEOUT`                             | `60`                          | Seconds before the transcription POST gives up; raise it for local backends with slow model loads     |
+| `CCGRAM_WHISPER_TIMEOUT`                              | `60`                           | Seconds before the transcription POST gives up; raise it for local backends with slow model loads    |
 | `CCGRAM_LLM_PROVIDER`                                 | _(empty = disabled)_           | LLM provider for shell command generation                                                            |
 | `CCGRAM_LLM_API_KEY`                                  | _(empty)_                      | API key for LLM provider (env only)                                                                  |
 | `CCGRAM_LLM_BASE_URL`                                 | _(from provider)_              | Custom LLM API endpoint                                                                              |
@@ -291,6 +294,8 @@ A text batch is eligible only when every item is a non-empty, one-part text task
 
 Each item is rendered to Telegram entities before the items are combined. Formatting opened in one item cannot alter the next item's formatting, and each item retains the formatting it would have had if sent on its own. This makes the batching lossless for eligible text while preserving the delivery boundaries of everything else.
 
+A successful batch acknowledges every original queued item for the transcript watermark, even when several items share a checkpoint or the batch was retried after a Telegram flood wait. A cancelled send or an exhausted retry budget does not advance the watermark past that batch.
+
 ### Queue progress and severe backlogs
 
 The editable topic status bubble shows queue telemetry only for a severe backlog:
@@ -306,6 +311,24 @@ These are in-memory progress metrics, so they reset when CCGram restarts. Health
 **Jump to live** is an inline, two-step action: tap it, then tap **Confirm jump to live**. Cancel leaves the queue and all watermarks unchanged. On confirmation, CCGram snapshots the selected transcript source at its current EOF, persists a skip barrier before retiring only that source's queued range, and queues a visible notice such as `⏭ Skipped N queued transcript item(s) for live view (bytes A–B). Raw transcript retained.` New transcript bytes written after the snapshot are not part of the jump; an already in-flight send is also left alone rather than cancelled.
 
 The raw provider transcript is retained; Jump to live does not delete or rewrite it. CCGram advances the durable delivered watermark past the skipped range only after Telegram acknowledges the skipped-range notice. If CCGram restarts or notice delivery fails first, it restores the barrier and retries the notice rather than silently advancing. Normal transcript relay is **at-least-once**, not exactly-once: a Telegram outcome that is not confirmed before a retry or restart can produce a duplicate message. This watermark policy favors retaining/replaying output over losing it.
+
+### Restarts and flood control
+
+The delivered watermark follows each session's settled receipt prefix, so a
+flood-limited or wedged queue can leave it well behind the transcript. One
+behaviour keeps the next restart from turning that into a message flood:
+
+**Bounded startup replay** — on the first poll of each session after a
+restart, an undelivered range larger than `CCGRAM_STARTUP_REPLAY_MAX_KB`
+(default **256**) is treated as history: the parse position jumps to the
+transcript EOF and the range is not delivered. The bytes stay in the raw
+transcript. Set `CCGRAM_STARTUP_REPLAY_MAX_KB=0` to replay everything again
+(the previous behaviour).
+
+Flood control itself is per chat and is handled by waiting in place: the
+worker retries the same task after the backoff, so delivery order is never
+changed. Cross-topic fairness while one chat is limited is a separate
+concern and is not attempted here.
 
 ## Thinking Visibility
 
@@ -443,6 +466,10 @@ Before each removal, CCGram rechecks the exact chat/topic binding. A topic that 
 
 Session creation owns an exact topic record, saved before the first remote request. That ownership protects the topic during slow startup and replacement. It does not expire while the creation task is running.
 
+For `/new` topic creation and recovery of unfinished topic creation, registration can arrive before the terminal reports the running agent process. CCGram waits for a confirmed foreground matching the selected provider before binding or sending the first message. A readiness timeout keeps the session quarantined and retains the first message in the creation flow. Recovery, including replacement of a deleted topic, also requires matching foreground evidence; elapsed time never substitutes for it. Custom launch scripts must [exec the provider CLI](providers.md#custom-launch-commands).
+
+This startup wait does not cover existing-topic resume/relaunch commands. Their existing input paths still use the normal foreground lease checks.
+
 Startup, periodic cleanup, and `/sync` recover abandoned creation records from current session presence. Recovery verifies the recorded Telegram topic by editing its title to the resolved session name before restoring its binding. It checks only abandoned creation records, never scans all active topics, and sends no temporary probe messages. Missing edit permission or transport errors leave the creation record unresolved.
 
 If the title changes, Telegram posts a rename service message. The rename can remove status, provider, and YOLO badges. A later status refresh may restore these badges and produce another rename notice.
@@ -500,9 +527,193 @@ Set `CCGRAM_GROUP_ID` to one group ID to restrict the process to that group. It 
 ignores updates from other groups. To find the ID, add
 [@RawDataBot](https://t.me/RawDataBot) to the group; it replies with the negative chat ID.
 
+## Starting a Session (one typed line)
+
+A new session starts from one message in a fresh topic:
+
+```text
+<agent>[:<mode>] <project|path> [@branch] <instruction...>
+```
+
+```text
+codex ccgram fix the hook timeout
+claude:yolo ccgram refactor the parser
+pi archfit @perf-sweep profile the scan stage
+ccgram explain the delivery queue          # no agent word → CCGRAM_PROVIDER
+fix the flaky test                          # no project word → last project
+```
+
+The parsed line becomes one launch: CCGram creates the session, binds it to
+this topic, renames the topic to the plan label, and forwards the instruction.
+
+### What each slot accepts
+
+| Slot | Rules |
+| --- | --- |
+| agent | `claude`/`c`/`cc`, `codex`/`cx`, `pi`, `antigravity`/`agy`/`ag`, `shell`/`sh`/`bash`. Omitted → `CCGRAM_PROVIDER`. |
+| `:mode` | `yolo` (default), `safe`/`normal`/`std`. Omitted → `CCGRAM_DEFAULT_MODE`. |
+| project | A name under `CCGRAM_PROJECTS_ROOTS` (default `~/Workspace`), or any absolute/`~` path. Matched by exact name, then unique prefix, then unique substring. |
+| `@branch` | Optional. Creates a git worktree on that new branch and roots the session there. |
+| instruction | Everything after the consumed words, verbatim, including newlines. |
+
+Notes:
+
+- Agent words are matched against the alias table only, so an ordinary sentence is never mistaken for a command.
+- When the project word matches several projects, CCGram replies with one message naming them; retype the line with the full name. Nothing is stored between messages, so there is no keyboard to go stale. A word that matches nothing is read as the first instruction word (using the last-used project), unless an `@branch` follows it — that proves a project slot, so the failure is reported instead of guessed. The directory browser opens only for a plain instruction: no project slot was attempted, so nothing about the line is lost by handing it to the browser.
+- Under a projects root the directory browser lists **git checkouts only**; deeper levels list every subdirectory. Set `CCGRAM_DIR_BROWSER_ALL_DIRS=true` to list everything everywhere.
+
+### Defaults instead of pickers
+
+| Behaviour | Default | Environment variable |
+| --- | --- | --- |
+| Launch mode | `yolo` | `CCGRAM_DEFAULT_MODE=normal` |
+| Agent without an agent word | `CCGRAM_PROVIDER` | `CCGRAM_PROVIDER` |
+| Project search roots | `~/Workspace` when it exists, else `~`; configured roots that do not exist are dropped | `CCGRAM_PROJECTS_ROOTS` (`os.pathsep`-separated) |
+| Worktree in the browser flow | off | `CCGRAM_NEW_TOPIC_WORKTREES=true` |
+| Workspace picker (herdr/agterm) | off — resolved from the folder | `CCGRAM_WORKSPACE_PICKER=true` |
+| Bind-existing window picker on a new topic | off — use `/bind` | `CCGRAM_BIND_PICKER=true` |
+| Provider list | antigravity, claude, codex, pi, shell | `CCGRAM_PROVIDERS_ENABLED` |
+| First-run trust screens | answered automatically | `CCGRAM_AUTOSTART_TRUST=false`, `CCGRAM_<AGENT>_AUTOSTART=off` |
+| Directory browser listing | git checkouts at the roots | `CCGRAM_DIR_BROWSER_ALL_DIRS=true` |
+
+The typed flow never opens a provider picker: an omitted agent word uses
+`CCGRAM_PROVIDER`, and a provider that is disabled or not installed fails the
+launch with a one-line reason. The directory browser's provider picker lists
+only enabled providers whose CLI resolves on `PATH`; Gemini is not offered by
+default — list it in `CCGRAM_PROVIDERS_ENABLED` to bring it back.
+
+### Worktrees
+
+`@branch` always works, whatever `CCGRAM_NEW_TOPIC_WORKTREES` says: it is the
+deliberate case. An `@word` inside the instruction is ordinary text: a branch
+is only recognised immediately after the project slot. The worktree is created at `<repo>.worktrees/<slug>` with
+`git worktree add … -b <branch>`, and the session is rooted at the same
+subdirectory you named (when the project was a subdirectory of the repo). A
+subdirectory that exists only as uncommitted content in the source checkout is
+absent from the fresh worktree, so the session starts at the worktree root. A
+branch that already exists fails with a one-line error; type a different name.
+Backends with native worktrees (herdr) create the checkout themselves.
+
+`CCGRAM_NEW_TOPIC_WORKTREES=true` additionally makes every session get its own
+worktree with a suggested `ccg/<kebab(label)>` branch, and restores the
+worktree step in the directory-browser flow.
+
+Dirty source repositories are allowed; uncommitted work stays where it is.
+
+### First-run approval screens
+
+A fresh agent can stop before its prompt. CCGram clears the two known cases
+without a tap:
+
+- **Claude — "Do you trust the files in this folder?"** — CCGram writes
+  `hasTrustDialogAccepted` for the project in the profile the launch reads: the
+  `CLAUDE_CONFIG_DIR` profile when that is set, otherwise `~/.claude.json`. Seeding runs only for
+the default profile: when `CODEX_HOME` or `CLAUDE_CONFIG_DIR` is set, the launched shell may
+read a different profile, so the pane fingerprint clears the screen instead of
+a write landing in a file nothing reads.
+- **Codex — hooks review ("trust all and continue")** — CCGram adds
+  `[projects."<path>"]` with `trust_level = "trusted"` to
+  `$CODEX_HOME/config.toml` (or `~/.codex/config.toml`).
+
+If a declared first-run screen still appears, CCGram answers it only on an
+exact fingerprint and sends the documented keys once. If readiness fails and
+no fingerprint matches, the launch reports the blocked session instead of
+guessing.
+
+Turn the whole layer off with `CCGRAM_AUTOSTART_TRUST=false` — that switch is final, and a
+per-agent `on` cannot override it. Disable one agent with `CCGRAM_<AGENT>_AUTOSTART=off` (for example
+`CCGRAM_CODEX_AUTOSTART=off`). Seeding is skipped automatically when a
+provider has a launch-command override, because an override such as
+`CODEX_HOME=/profiles/work codex` points the agent at a profile this
+process cannot see.
+
+### Topic and session names
+
+The topic title comes from the plan label: project name plus the first few
+instruction words (`ccgram · fix the hook timeout`, truncated to 48
+characters). CCGram pins that name as the window display name, so a backend,
+shell prompt, or agent title update can no longer rename the topic to
+`<name> <target id>`. Rename explicitly with Telegram's topic rename or the
+toolbar; pinned names survive window re-keying.
+
+### Binding an existing session
+
+`/bind` in an unbound topic lists windows that are running but not bound to
+any topic; one tap attaches the chosen one and renames the topic. Sessions
+started from the terminal become topics automatically in the default `auto` discovery mode.
+
 ## Creating Sessions from the Terminal
 
 Besides creating sessions through Telegram topics, you can create windows directly in your terminal multiplexer.
+
+The backend instructions below describe default automatic discovery. Use marked-only discovery to select which terminals receive automatic topics.
+
+### Marked-only discovery
+
+Set the discovery mode in the bot's `.env`, or start it with `ccgram run --topic-discovery marked`:
+
+```ini
+CCGRAM_TOPIC_DISCOVERY=marked
+```
+
+Use the same backend, actual native endpoint and CCGram state directory as the bot. Replace `TARGET` with an exact `id` from status, not a name, owner token, or active-terminal guess:
+
+```bash
+ccgram topic status
+ccgram topic mark TARGET
+ccgram topic status TARGET
+ccgram topic unmark TARGET
+```
+
+These commands do not require Telegram credentials. Status emits JSON with `backend`, `mode`, live `targets` (including native `marked`, `markable`, and diagnostic `owner`), and `pending_operations`. Diagnostics go to stderr. Status is read-only. The journal records unfinished native work and dispatch safety evidence, not a second selected-state preference.
+
+With the bot running, mutation uses the matching state/backend/native-endpoint daemon's private local socket. Otherwise the CLI must obtain the same exclusive state-writer lease. It never bypasses a busy lease or unavailable matching daemon with a direct native write. Unknown or mismatching native endpoint identity refuses mutation without creating new retryable manual intent. A matching backend name, target ID or copied native owner is insufficient. Opposite prepared intent blocks a manual write. Same-desired prepared work can complete through the shared journal, but cannot bypass an armed attempt.
+
+Selection uses a window-local native option in tmux, an owned ON/OFF manual-label suffix in standard Herdr, and the primary session flag in agterm. Herdr retains a visible OFF owner suffix after unmarking so restoration and reselection keep the same owner. Agterm splits remain explicitly bindable without marking the primary. Ordinary Herdr names do not mark a terminal; copying a layout can copy explicit marker state, so fresh-worker templates must omit it. See [native storage and restoration limits](design/marked-topic-discovery.md#native-storage-and-restoration).
+
+In marked mode, the native flag controls both discovery and existing markable primary topics:
+
+| Native action | Telegram result |
+| --- | --- |
+| Mark / flag | Create a topic, or reopen the same paused topic |
+| Unmark / unflag | Stop forwarding and close the topic; retain its history and terminal session |
+| Reflag after deleting a paused topic | Create a fresh topic; deleted history cannot be restored |
+
+In agterm, use the session flag in the UI; tint/color is not selection. Splits remain explicitly bindable and do not follow the primary flag. In `auto` mode, unmarking still leaves existing topics connected.
+
+Pause state and exact user/chat/topic/target/owner mappings survive bot restarts. The resume cutoff is tied to the source epoch and inode, so transcript replacement or truncation cannot suppress fresh replies. Resuming starts at the current transcript EOF: output produced while paused is not replayed, and the raw transcript is unchanged. Requests already dispatched to Telegram cannot be recalled. Native metadata that is unknown or unavailable does not authorize a new pause, resume, or deletion.
+
+Closing a flag-controlled topic in Telegram does not clear the native flag: if still flagged, it reopens. Use `/unbind` and confirm when you want an explicit detach. This clears selection without killing the terminal, and deliberate detach is exempt from orphan TTL.
+
+#### Delete unflagged topics
+
+Run `/sync unflagged` in the Topics group to preview your paused topics. Each preview lists up to 20 topic IDs and names; repeat for the remaining topics. **Delete listed topics** permanently deletes those topics and all their Telegram messages; running terminal sessions are kept. Confirmations expire after five minutes and after a bot restart. Re-run the command after a failure; failed deletions are not placed in the ordinary automatic retry queue.
+
+Immediately before each deletion, CCGram checks that the exact paused binding and native owner still match and that selection is affirmatively off. Reflagged/rebound targets, General, unfinished creation, uncertain native writes, splits, and unavailable metadata are protected. A local deletion claim blocks rebinding during the request. Native flag changes and Telegram deletion are not one atomic transaction: a flag change after the final check cannot recall an already dispatched delete.
+
+Closed topics remain visible until deleted. `/sync` without arguments retains its existing dead-session cleanup behavior.
+
+If unmarking withdraws an unfinished explicit creation, CCGram retains its exact uncertain claim unbound and does not delete a possibly human-used topic. With no armed attempt, reselecting the native target permits creation recovery. Reselection does not clear dispatch uncertainty. See [lifecycle details](design/marked-topic-discovery.md#unfinished-or-ambiguous-detach).
+
+#### Native-write quarantine and recovery
+
+A native update can remain able to execute after a timeout, EOF, cancellation or client crash. CCGram saves an armed attempt before any possible dispatch. In status, `pending_operations` has `attempt: null` for prepared work or an attempt containing its dispatched `desired` and `witness`.
+
+Guarded marker writes require the reviewed native versions: agterm 0.42.3, Herdr 0.9.5, or tmux 3.8. Other versions and unproved/proxied/inherited endpoints refuse before mutation. Ordinary backend protocol compatibility does not establish guarded-write support.
+
+An armed attempt blocks new admission and binding for the affected resource in **both** discovery modes. It also blocks further native writes and settlement. Existing bound topics, forwarding and liveness continue. Independent, verifiable owners remain usable.
+
+1. Run `ccgram topic status` with the bot's backend and state directory. Inspect pending work and stderr diagnostics.
+2. Do not delete or edit the journal, socket pins or state lock. Do not retry same/opposite marks to bypass quarantine.
+3. Save work before deciding whether to retire the affected native server through its normal native controls. **Retiring a tmux server can end its terminals and agents and lose unsaved work.** CCGram never kills or restarts native processes for recovery.
+4. Leave the journal intact. Existing maintenance checks exact native-process retirement and safe cleanup of its recorded pin. A timer, snapshot, replaced socket or changed PID is insufficient.
+5. After verified retirement, maintenance removes only that attempt. It freshly checks the owner and latest desired intent before any new journaled write. Use status again to inspect the result. A changed or unknown owner remains unresolved rather than being guessed.
+
+There is no separate recovery command or acknowledgement switch. Restarting ccgram, reselection, an absent target or a currently correct flag cannot prove an old write finished. If retirement or endpoint ownership cannot be proven, quarantine remains. Normal maintenance checks run every 60 seconds, but elapsed time is not completion evidence. Without the daemon, existing mark/unmark commands use the same retirement proof under the exclusive state lease. They cannot bypass an armed attempt whose executor remains alive or unproved. See the [dispatch contract](design/marked-topic-discovery.md#dispatch-quarantine-and-recovery).
+
+If mark/unmark reports `Native marker endpoint is unconfirmed`, inspect native provenance before retrying. The current agterm metadata check refused with macOS `-67034` (`errSecCSStaticCodeChanged`), indicating that the installed App and running image differ. Save work and restart agterm normally before retrying its provenance check. CCGram does not restart the App or bypass this check. An App restart alone does not settle an armed attempt. A positive live guarded agterm write has not been verified against the mismatched running image.
+
+When upgrading, stop older ccgram writers and CLI invocations before starting the new version. Ordinary v4.22 state without a marker journal remains valid. Unpublished three- or four-field development journal rows are incompatible and fail closed. Preserve them for investigation rather than deleting evidence or assuming a migration.
 
 ### tmux (default)
 
@@ -593,6 +804,25 @@ Live view (auto-refreshing) uses the same viewport capture at a smaller font siz
 - **Shell** — captures scrollback and extracts the last command+output block between prompt markers.
 
 Responses longer than 4096 characters are sent as a `.txt` document attachment instead of a text message.
+
+## Upload Photos and Documents to a Session
+
+Send a photo or document to a bound topic. CCGram saves the file under
+`.ccgram-uploads/` in the session's working directory and tells the agent where
+to find it, along with any caption. Telegram's hosted Bot API limits
+[`getFile` downloads](https://core.telegram.org/bots/api#getfile) to 20 MB.
+CCGram separately rejects files above its local cap of 50 MiB; this does not
+raise Telegram's limit.
+
+If Telegram times out or hits another transient network error while fetching the
+file, CCGram tries up to three times total, waiting half a second between
+attempts. Failed downloads don't leave a partial upload or replace an existing
+file. When creating a hard link returns `ENOTSUP` or `EOPNOTSUPP` (or `EPERM` on
+Linux, which can mean the filesystem doesn't support hard links), CCGram saves
+the completed file in a new subdirectory under `.ccgram-uploads/`. Telegram
+reports the actual path relative to the session's working directory, even if
+the agent notification fails. The file remains available, and CCGram does not
+resend the notification.
 
 ## File Delivery (`/send`)
 
@@ -685,6 +915,10 @@ When you forward a slash command that opens a modal in-TUI picker (e.g. Claude `
 
 ## Git Worktree Topics
 
+The typed form `<agent> <project> @<branch> <instruction>` covers the
+deliberate case; the steps below appear only with
+`CCGRAM_NEW_TOPIC_WORKTREES=true`.
+
 When you create a new topic and pick a directory that's an **eligible git repo** (in-work-tree, not bare, on a named branch, no in-progress merge/rebase), an extra step appears between directory-confirm and provider-pick:
 
 - **Use current branch** — original flow, no worktree.
@@ -717,7 +951,7 @@ All state files live in `$CCGRAM_DIR` (`~/.ccgram/` by default):
 | `events.jsonl`       | Append-only hook event log (read incrementally by monitor)        |
 | `monitor_state.json` | Delivered transcript watermarks and pending Jump-to-live barriers |
 
-Session transcripts are read from provider-specific locations (read-only): `~/.claude/projects/` (Claude), `~/.codex/sessions/` (Codex), `~/.gemini/tmp/` (Gemini), `~/.pi/agent/sessions/` (Pi). Shell has no transcript — output is captured directly from the tmux pane. The bot never writes to agent data directories; the delivered watermark records relay progress, not a mutation of the raw transcript.
+Session transcripts are read from provider-specific locations (read-only): `~/.claude/projects/` (Claude), `~/.codex/sessions/` (Codex), `~/.gemini/tmp/` (Gemini), `~/.pi/agent/sessions/` (Pi). Shell has no transcript — output is captured directly from the tmux pane. The bot never rewrites a raw transcript: the delivered watermark records relay progress, not a mutation of the transcript. The one agent-config write is the optional first-run trust seeding described in [First-run approval screens](#first-run-approval-screens) — a project entry in `~/.claude.json` or `$CODEX_HOME/config.toml`; disable it with `CCGRAM_AUTOSTART_TRUST=false`.
 
 ## Running as a Service
 

@@ -724,9 +724,14 @@ class TestSettledPrefixWatermarkCommit:
                         "type": "user",
                         "uuid": "result-message",
                         "message": {
-                            "role": "toolResult",
-                            "toolCallId": "tool-1",
-                            "content": "read complete",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "tool-1",
+                                    "content": "read complete",
+                                }
+                            ],
                         },
                     }
                 )
@@ -789,9 +794,14 @@ class TestSettledPrefixWatermarkCommit:
             "type": "user",
             "uuid": "result-message",
             "message": {
-                "role": "toolResult",
-                "toolCallId": "tool-1",
-                "content": "read complete",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": "read complete",
+                    }
+                ],
             },
         }
         session_file.write_text(json.dumps(tool_call) + "\n")
@@ -1155,9 +1165,10 @@ class TestSettledPrefixWatermarkCommit:
             {
                 "type": "user",
                 "message": {
-                    "role": "toolResult",
-                    "toolCallId": "t1",
-                    "content": "done",
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": "done"}
+                    ],
                 },
             },
         )
@@ -1228,9 +1239,14 @@ class TestSettledPrefixWatermarkCommit:
             "type": "user",
             "uuid": "result-message",
             "message": {
-                "role": "toolResult",
-                "toolCallId": "tool-1",
-                "content": "skipped result",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": "skipped result",
+                    }
+                ],
             },
         }
         fresh_output = {
@@ -1487,9 +1503,14 @@ class TestSettledPrefixWatermarkCommit:
                         "type": "user",
                         "uuid": "result-message",
                         "message": {
-                            "role": "toolResult",
-                            "toolCallId": "tool-1",
-                            "content": "replayed result",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "tool-1",
+                                    "content": "replayed result",
+                                }
+                            ],
                         },
                     }
                 )
@@ -1580,9 +1601,14 @@ class TestSettledPrefixWatermarkCommit:
             "type": "user",
             "uuid": "result-message",
             "message": {
-                "role": "toolResult",
-                "toolCallId": "tool-1",
-                "content": "read complete",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": "read complete",
+                    }
+                ],
             },
         }
         later_text = {
@@ -3623,6 +3649,157 @@ class TestTheLoopPassesTheEligibleSubset:
         assert received == [{"KEEP"}], (
             "the loop must hand over the eligible subset, not every live window"
         )
+
+    async def test_an_unavailable_listing_goes_through_the_throttle(
+        self, monitor: SessionMonitor, monkeypatch
+    ) -> None:
+        notices: list[tuple[str, str]] = []
+
+        def spy(log, key, msg, *args, **kwargs):
+            notices.append((key, msg))
+
+        async def stop(raw=None, *, adoptable_window_ids):
+            monitor._running = False
+            return {}
+
+        monkeypatch.setattr(
+            "ccgram.session_monitor.list_windows_for_reconciliation",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr("ccgram.session_monitor.log_throttled", spy)
+        monkeypatch.setattr(
+            "ccgram.session_monitor.read_session_map_raw", AsyncMock(return_value={})
+        )
+        monkeypatch.setattr(monitor, "_read_hook_events", AsyncMock())
+        monkeypatch.setattr(monitor, "_cleanup_all_stale_sessions", AsyncMock())
+        monkeypatch.setattr(monitor, "_detect_and_cleanup_changes", stop)
+        monitor._running = True
+
+        await monitor._monitor_loop()
+
+        assert [key for key, _ in notices] == ["monitor-window-reconciliation-listing"]
+
+
+class TestMarkedMonitorDiscovery:
+    async def test_unregistered_windows_apply_policy(self, monitor, monkeypatch):
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "topic_discovery_mode", "marked")
+        monkeypatch.setattr(SessionManager, "_save_state", lambda self: None)
+        SessionManager()
+        callback = AsyncMock()
+        monitor.set_new_window_callback(callback)
+        windows = [
+            WindowRef(
+                "marked", "one", "/p", topic_marked=True, topic_mark_owner="owner"
+            ),
+            WindowRef("unmarked", "two", "/p", topic_marked=False),
+            WindowRef("unknown", "three", "/p", topic_marked=None),
+            WindowRef(
+                "pending", "four", "/p", topic_marked=True, topic_mark_owner="owner"
+            ),
+            WindowRef("split", "five", "/p", topic_marked=True, topic_markable=False),
+        ]
+        monkeypatch.setattr(
+            "ccgram.session_monitor.lifecycle_state.is_topic_detach_pending",
+            lambda window_id, *, owner: window_id == "pending",
+        )
+
+        await monitor._emit_unbound_window_events(windows, set())
+
+        assert [call.args[0].window_id for call in callback.await_args_list] == [
+            "marked"
+        ]
+
+    async def test_loop_filters_delta_and_known_paths_but_keeps_every_window_live(
+        self, monitor, monkeypatch
+    ):
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "topic_discovery_mode", "marked")
+        windows = [
+            WindowRef(
+                "marked", "one", "/p", topic_marked=True, topic_mark_owner="owner"
+            ),
+            WindowRef("unmarked", "two", "/p", topic_marked=False),
+            WindowRef("unknown", "three", "/p", topic_marked=None),
+            WindowRef(
+                "pending", "four", "/p", topic_marked=True, topic_mark_owner="owner"
+            ),
+        ]
+        observed = {}
+
+        async def delta(raw=None, *, adoptable_window_ids):
+            observed["delta"] = adoptable_window_ids
+            monitor._running = False
+            return {}
+
+        async def known(current_map, adoptable_window_ids):
+            observed["known"] = adoptable_window_ids
+
+        monkeypatch.setattr(
+            "ccgram.session_monitor.list_windows_for_reconciliation",
+            AsyncMock(return_value=windows),
+        )
+        monkeypatch.setattr(
+            "ccgram.session_monitor.lifecycle_state.is_topic_detach_pending",
+            lambda window_id, *, owner: window_id == "pending",
+        )
+        monkeypatch.setattr(
+            "ccgram.session_monitor.read_session_map_raw", AsyncMock(return_value={})
+        )
+        monkeypatch.setattr(monitor, "_read_hook_events", AsyncMock())
+        monkeypatch.setattr(monitor, "_cleanup_all_stale_sessions", AsyncMock())
+        monkeypatch.setattr(monitor, "_detect_and_cleanup_changes", delta)
+        monkeypatch.setattr(monitor, "_emit_known_unbound_window_events", known)
+        monkeypatch.setattr(monitor, "_emit_unbound_window_events", AsyncMock())
+        prune = Mock()
+        monkeypatch.setattr(
+            "ccgram.session_map.session_map_sync.prune_session_map", prune
+        )
+        monitor._running = True
+
+        await monitor._monitor_loop()
+
+        assert observed == {"delta": {"marked"}, "known": {"marked"}}
+        prune.assert_called_once_with({"marked", "unmarked", "unknown", "pending"})
+
+
+def test_bound_owner_observation_does_not_track_unadmitted_workers():
+    from ccgram.session_monitor import _observe_bound_topic_owners
+    from ccgram.window_state_ports import lifecycle_state
+    from ccgram.window_state_store import (
+        WindowState,
+        WindowStateStore,
+        get_window_store,
+        install_window_store,
+    )
+
+    previous = get_window_store()
+    store = WindowStateStore(
+        schedule_save=lambda: None, on_hookless_provider_switch=lambda wid: None
+    )
+    install_window_store(store)
+    try:
+        store.window_states["BOUND"] = WindowState(topic_mark_owner="previous")
+        lifecycle_state.set_topic_selection(
+            "pending", owner="unfinished", pending=False, detached=True
+        )
+        _observe_bound_topic_owners(
+            [
+                WindowRef("bound", "one", "/p", topic_mark_owner="current"),
+                WindowRef("pending", "two", "/p", topic_mark_owner="different"),
+                WindowRef("unadmitted", "three", "/p", topic_mark_owner="new"),
+            ],
+            {"BOUND", "pending"},
+        )
+        assert store.window_states["BOUND"].topic_mark_owner == "current"
+        assert store.window_states["pending"].topic_mark_owner == "different"
+        assert lifecycle_state.is_topic_detach_pending("pending", owner="unfinished")
+        assert not lifecycle_state.is_topic_detach_pending("pending", owner="different")
+        assert "unadmitted" not in store.window_states
+    finally:
+        install_window_store(previous)
 
 
 class TestAdoptionIdentityFoldsCaseInTheMonitor:

@@ -48,6 +48,15 @@ _MOD_WC = "ccgram.handlers.topics.workspace_callbacks"
 _MOD_WL = "ccgram.handlers.topics.window_launch_service"
 
 
+@pytest.fixture(autouse=True)
+def _worktrees_opt_in(monkeypatch: pytest.MonkeyPatch):
+    """Every test here exercises the browser worktree flow, which is opt-in."""
+    from ccgram.config import config
+
+    monkeypatch.setattr(config, "new_topic_worktrees", True, raising=False)
+    yield
+
+
 class _TopicCreationBackend:
     def __init__(self, failure: ProtocolError | None = None) -> None:
         self.target = Target(

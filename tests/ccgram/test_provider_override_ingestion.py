@@ -13,7 +13,7 @@ from ccgram.handlers.messaging_pipeline.message_task import ContentTask
 from ccgram.handlers.messaging_pipeline import message_queue
 from ccgram.providers.pi import PiProvider
 from ccgram.window_state_ports import identity_state
-from ccgram.transcript_reader import _StartupBoundary, _prefix_digest
+from ccgram.transcript_reader import _StartupBoundary, _advance_prefix
 from ccgram.session_protocol.messages import SourceEntry
 from ccgram.window_state_store import (
     WindowState,
@@ -225,7 +225,7 @@ async def test_manual_switch_during_generation_probe_restores_offset_and_boundar
     path.parent.mkdir(parents=True)
     path.write_text("old transcript\n")
     old_size = path.stat().st_size
-    old_digest = _prefix_digest(path, old_size)
+    old_prefix = _advance_prefix(None, path, old_size)
     path.write_text("replacement transcript longer than the original\n")
     stat = path.stat()
     monitor = SessionMonitor()
@@ -237,7 +237,7 @@ async def test_manual_switch_during_generation_probe_restores_offset_and_boundar
         parsed_offset=old_size,
     )
     monitor.state.update_session(tracked)
-    reader._file_prefixes["hook-session"] = (old_size, old_digest)
+    reader._file_prefixes["hook-session"] = old_prefix
     boundary = _StartupBoundary(size=old_size, device=stat.st_dev, inode=stat.st_ino)
     reader._startup_file_boundaries["hook-session"] = boundary
     output = []

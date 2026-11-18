@@ -202,9 +202,10 @@ class TestCanonicalTranscriptParsing:
 
     def test_history_message_preserves_order_and_timestamp(self) -> None:
         entry = {
-            "type": "assistant",
+            "type": "message",
             "timestamp": "2024-12-03T14:00:02.000Z",
             "message": {
+                "role": "assistant",
                 "content": [
                     {"type": "text", "text": "before"},
                     {
@@ -214,7 +215,7 @@ class TestCanonicalTranscriptParsing:
                         "arguments": {"path": "foo.py"},
                     },
                     {"type": "text", "text": "after"},
-                ]
+                ],
             },
         }
         messages = build_messages([SourceEntry(0, entry)], "pi-test", "pi")
@@ -320,6 +321,7 @@ class TestCapabilities:
         assert caps.name == "pi"
         assert caps.launch_command == "pi"
         assert caps.supports_hook is True
+        assert caps.hook_install_managed_by_ccgram is True
         assert caps.supports_resume is True
         assert caps.supports_continue is True
         assert caps.supports_incremental_read is True
@@ -343,13 +345,24 @@ class TestCapabilities:
             "/session",
             "/settings",
             "/share",
+            "/thinking",
             "/tree",
         }
         assert "/clear" not in caps.builtin_commands
         assert "/resume" not in caps.builtin_commands
 
         assert caps.tui_picker_commands == frozenset(
-            {"model", "login", "fork", "clone", "scoped-models", "settings"}
+            {
+                "model",
+                "thinking",
+                "login",
+                "logout",
+                "fork",
+                "clone",
+                "scoped-models",
+                "settings",
+                "tree",
+            }
         )
 
 
