@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .topic_state_registry import topic_state
+from .session_protocol.messages import SourceEntry, parse_records
 
 # Idle status sentinel — lives here (core) rather than in handlers/callback_data
 # to avoid a core → handler layer violation.
@@ -233,9 +234,13 @@ class ClaudeTaskStateStore:
     ) -> bool:
         if not window_id or not session_id:
             return False
+        records, _ = parse_records(
+            [SourceEntry(index, entry) for index, entry in enumerate(entries)], "claude"
+        )
         state = self._get_or_create(window_id, session_id)
         changed = False
-        for entry in entries:
+        for source, _ in records:
+            entry = source.data
             entry_type = entry.get("type")
             if entry_type == "assistant":
                 changed |= self._apply_assistant_entry(state, entry)

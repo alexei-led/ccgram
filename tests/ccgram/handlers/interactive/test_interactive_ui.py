@@ -54,7 +54,7 @@ def _interactive_env(
         patch(
             f"{_UI}._capture_interactive_content",
             new_callable=AsyncMock,
-            return_value=(ui_name, "Pick one:", advisory),
+            return_value=(ui_name, "Pick one:", advisory, None),
         ),
         patch(f"{_UI}.thread_router") as mock_router,
         patch(f"{_UI}.rate_limit_send", new_callable=AsyncMock),
@@ -306,8 +306,8 @@ class TestAdvisoryInteractiveMode:
                 f"{_UI}._capture_interactive_content",
                 new_callable=AsyncMock,
                 side_effect=[
-                    ("SelectionUI", "Pick an action:", True),
-                    ("PermissionPrompt", "Do you want to proceed?", False),
+                    ("SelectionUI", "Pick an action:", True, None),
+                    ("PermissionPrompt", "Do you want to proceed?", False, None),
                 ],
             ),
         ):

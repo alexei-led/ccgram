@@ -1,0 +1,47 @@
+Settings  Status   Config   Usage   Stats
+
+   ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │ ⌕ Search settings…                                                                                                                                                                  │
+   ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+   ❯ Auto-compact                                true
+     Continue automatically at usage limit       true
+     Switch models when a message is flagged     Switch automatically ›
+     Show tips                                   true
+     Reduce motion                               false
+     Thinking mode                               true
+     Thinking can't be turned off for Opus 5.5
+     Session recap                               true
+     Rewind code (checkpoints)                   true
+     Dynamic workflows                           true
+     Ultracode keyword trigger                   true
+     Dynamic workflow size                       medium (default)
+     Verbose output                              false
+     Terminal progress bar                       true
+     Show turn duration                          true
+     Time format                                 auto ›
+     Default permission mode                     Manual
+     Worktree base ref                           fresh
+     Use auto mode during plan                   true
+     Respect .gitignore in file picker           true
+     Skip the /copy picker                       false
+     Copy on select                              true
+     Auto-scroll                                 true
+     Open agents view by default                 false
+     ← opens agents                              true
+     Auto-update channel                         disabled (set by env: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) ›
+     Theme                                       Dark mode ›
+     Local notifications                         Auto
+     Output style                                default ›
+     Language                                    Default (English) ›
+     Editor mode                                 normal
+     Question auto-continue timeout              never
+     Show last response in external editor       false
+     Show PR status footer                       true
+     Model                                       Default (recommended) ›
+     Auto-connect to IDE (external terminal)     false
+     Claude in Chrome enabled by default         false
+     Dialog expiry                               default
+     Messages from your other sessions           default ›
+
+   Type to filter · Enter/↓ to select · ↑ to tabs · Esc to clear

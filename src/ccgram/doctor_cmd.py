@@ -219,10 +219,12 @@ def _resolve_hook_check_config(
         _CODEX_HOOK_EVENTS,
         _GEMINI_HOOK_EVENTS,
         _HOOK_EVENT_TYPES,
+        _PI_HOOK_EVENTS,
         _claude_settings_file,
         _codex_hooks_file,
         _gemini_settings_file,
         _json_hook_command_predicate,
+        _pi_hooks_file,
     )
 
     if provider_name == "codex":
@@ -237,6 +239,12 @@ def _resolve_hook_check_config(
             _GEMINI_HOOK_EVENTS,
             _json_hook_command_predicate("gemini"),
         )
+    if provider_name == "pi":
+        return (
+            _pi_hooks_file(),
+            _PI_HOOK_EVENTS,
+            _json_hook_command_predicate("pi"),
+        )
     if provider_name == "claude":
         return _claude_settings_file(), _HOOK_EVENT_TYPES, None
     return None
@@ -246,15 +254,25 @@ def _scan_json_hook_events(
     settings: dict, events: tuple[str, ...], predicate: Callable[[str], bool]
 ) -> dict[str, bool]:
     """Detect installed hook events in a JSON-format settings file."""
-    return {
-        event_type: any(
-            isinstance(hook_config, dict) and predicate(hook_config.get("command", ""))
-            for group in settings.get("hooks", {}).get(event_type, [])
-            if isinstance(group, dict)
+    hooks = settings.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return dict.fromkeys(events, False)
+
+    statuses: dict[str, bool] = {}
+    for event_type in events:
+        event_hooks = hooks.get(event_type, [])
+        if not isinstance(event_hooks, list):
+            statuses[event_type] = False
+            continue
+        statuses[event_type] = any(
+            isinstance(hook_config, dict)
+            and isinstance(hook_config.get("command", ""), str)
+            and predicate(hook_config.get("command", ""))
+            for group in event_hooks
+            if isinstance(group, dict) and isinstance(group.get("hooks", []), list)
             for hook_config in group.get("hooks", [])
         )
-        for event_type in events
-    }
+    return statuses
 
 
 def _check_hooks(provider_name: str = "claude") -> tuple[str, str, dict[str, bool]]:
@@ -262,9 +280,6 @@ def _check_hooks(provider_name: str = "claude") -> tuple[str, str, dict[str, boo
 
     Returns (status, message, event_status_dict).
     """
-    if provider_name == "pi":
-        return _PASS, "Pi hooks are managed by hook-runner extension", {}
-
     resolved = _resolve_hook_check_config(provider_name)
     if resolved is None:
         return _FAIL, f"unknown provider for hook check: {provider_name}", {}
@@ -278,14 +293,29 @@ def _check_hooks(provider_name: str = "claude") -> tuple[str, str, dict[str, boo
         return _FAIL, f"hooks not installed ({settings_file} missing)", all_missing
     try:
         settings = json.loads(settings_file.read_text())
-    except (json.JSONDecodeError, OSError):  # fmt: skip
+    except json.JSONDecodeError, UnicodeDecodeError, OSError:
         return _FAIL, "hooks not installed (settings.json unreadable)", all_missing
+
+    if not isinstance(settings, dict):
+        return _FAIL, "hooks not installed (expected a JSON object)", all_missing
 
     if predicate is None:
         # Lazy: claude uses its own settings.json scanner
         from .hook import get_installed_events
 
         event_status = get_installed_events(settings)
+    elif provider_name == "pi":
+        # Pi's hook-runner accepts either a nested `hooks` map or a flat
+        # hooks.json event map, with the nested object taking precedence.
+        # Lazy: defer hook module dependencies until Pi diagnostics run.
+        from .hook import _json_hook_events
+
+        hook_events = _json_hook_events(settings, "pi")
+        if hook_events is None:
+            event_status = all_missing
+        else:
+            hooks, _flat = hook_events
+            event_status = _scan_json_hook_events({"hooks": hooks}, events, predicate)
     else:
         event_status = _scan_json_hook_events(settings, events, predicate)
     installed = [e for e, v in event_status.items() if v]

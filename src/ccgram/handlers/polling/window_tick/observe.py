@@ -98,6 +98,12 @@ async def _resolve_status(
     pane_title = ""
     if provider.capabilities.uses_pane_title:
         pane_title = await tmux_manager.get_pane_title(w.window_id)
+    if not provider.capabilities.uses_pyte_status_parsing:
+        # Snapshot backends can already return a rendered grid. Replaying it
+        # through pyte with fallback geometry can wrap rows and lose UI borders.
+        status = provider.parse_terminal_status(pane_text, pane_title=pane_title)
+        if status is not None:
+            return status
     status = provider.parse_terminal_status(clean_text, pane_title=pane_title)
     if status is not None:
         return status

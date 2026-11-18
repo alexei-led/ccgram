@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,6 +21,7 @@ from ccgram.handlers.topics.directory_callbacks import (
 )
 from ccgram.handlers.topics.window_launch_service import _accept_yolo_confirmation
 from ccgram.handlers.user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
+from ccgram.multiplexer.base import WindowRef
 from ccgram.window_query import resolve_window_alias
 
 
@@ -28,6 +30,15 @@ def _buttons(keyboard: InlineKeyboardMarkup) -> list:
 
 
 class TestBuildProviderPicker:
+    @pytest.fixture(autouse=True)
+    def _installed_providers(self):
+        """Pin the picker list: the real one probes PATH for each CLI."""
+        with patch(
+            "ccgram.providers.picker_provider_names",
+            return_value=["claude", "codex", "pi", "shell"],
+        ):
+            yield
+
     def test_header_names_the_selected_directory(self) -> None:
         text, keyboard = build_provider_picker("/home/user/my-project")
         assert "Select Provider" in text
@@ -43,16 +54,20 @@ class TestBuildProviderPicker:
         [
             ("claude", "Claude"),
             ("codex", "Codex"),
-            ("gemini", "Gemini"),
             ("pi", "Pi"),
             ("shell", "Term"),
         ],
     )
-    def test_offers_every_provider(self, provider: str, label: str) -> None:
+    def test_offers_every_enabled_provider(self, provider: str, label: str) -> None:
         _text, keyboard = build_provider_picker("/tmp/test")
         buttons = _buttons(keyboard)
         assert any(label in btn.text for btn in buttons)
         assert f"{CB_PROV_SELECT}{provider}" in [btn.callback_data for btn in buttons]
+
+    def test_gemini_is_not_offered(self) -> None:
+        _text, keyboard = build_provider_picker("/tmp/test")
+        callbacks = [btn.callback_data for btn in _buttons(keyboard)]
+        assert f"{CB_PROV_SELECT}gemini" not in callbacks
 
     def test_claude_marked_as_default(self) -> None:
         _text, keyboard = build_provider_picker("/tmp/test")
@@ -90,7 +105,14 @@ def _session_adapter(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
         foreground_argv=("codex",),
     )
     adapter = MagicMock()
-    adapter.create = AsyncMock(return_value=target)
+
+    async def create(data, **_kwargs):
+        target.provider = data["provider"]
+        target.available = True
+        target.foreground_argv = (data["provider"],)
+        return target
+
+    adapter.create = AsyncMock(side_effect=create)
     adapter.resolve = AsyncMock(return_value=(target, MagicMock()))
     adapter.send_keys = AsyncMock(return_value=(True, "ok"))
     monkeypatch.setattr(
@@ -182,22 +204,19 @@ class TestHandleConfirmShowsProviderPicker:
 
 class TestHandleProviderSelect:
     @patch(
-        "ccgram.handlers.topics.provider_mode_callbacks.safe_edit",
+        "ccgram.handlers.topics.provider_mode_callbacks.launch_window",
         new_callable=AsyncMock,
     )
-    @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
-    @patch("ccgram.handlers.topics.provider_mode_callbacks.provider_registry")
     @patch("ccgram.handlers.topics.provider_mode_callbacks.thread_router")
-    async def test_shows_mode_picker(
+    @patch("ccgram.handlers.topics.provider_mode_callbacks.provider_registry")
+    async def test_launches_in_the_default_mode_without_a_mode_picker(
         self,
-        mock_tr: MagicMock,
         mock_registry: MagicMock,
-        mock_tmux: MagicMock,
-        mock_edit: AsyncMock,
+        mock_tr: MagicMock,
+        mock_launch: AsyncMock,
     ) -> None:
         mock_registry.is_valid.return_value = True
         mock_tr.get_window_for_thread.return_value = None
-        mock_tmux.create_window = AsyncMock()
 
         user_data = {"browse_path": "/tmp/test", PENDING_THREAD_ID: 42}
         query = _make_query(data=f"{CB_PROV_SELECT}codex")
@@ -208,10 +227,10 @@ class TestHandleProviderSelect:
             query, 100, f"{CB_PROV_SELECT}codex", update, context
         )
 
-        mock_tmux.create_window.assert_not_called()
-        mock_edit.assert_called_once()
-        text = mock_edit.call_args[0][1]
-        assert "Select Session Mode" in text
+        mock_launch.assert_awaited_once()
+        request = mock_launch.call_args[0][2]
+        assert request.provider_name == "codex"
+        assert request.mode == "yolo"
 
     @patch("ccgram.handlers.topics.provider_mode_callbacks.provider_registry")
     async def test_rejects_unknown_provider(self, mock_registry: MagicMock) -> None:
@@ -248,7 +267,44 @@ class TestHandleProviderSelect:
         assert "expired" in mock_edit.call_args[0][1].lower()
 
 
+def _claim_router_spy() -> MagicMock:
+    from ccgram.thread_router import ThreadRouter
+    from ccgram.window_state_store import get_window_store
+
+    router = ThreadRouter(
+        schedule_save=lambda: None, has_window_state=get_window_store().has_window
+    )
+    spy = MagicMock(wraps=router)
+
+    def begin(*args, **kwargs):
+        claim = router.begin_topic_provisioning(*args, **kwargs)
+        spy.begin_topic_provisioning.return_value = claim
+        return claim
+
+    spy.begin_topic_provisioning.side_effect = begin
+    return spy
+
+
 class TestHandleModeSelect:
+    @pytest.fixture(autouse=True)
+    def _isolated_selection_state(self, monkeypatch):
+        from ccgram.window_state_store import (
+            WindowStateStore,
+            get_window_store,
+            install_window_store,
+        )
+
+        previous = get_window_store()
+        store = WindowStateStore(
+            schedule_save=lambda: None, on_hookless_provider_switch=lambda _wid: None
+        )
+        install_window_store(store)
+        monkeypatch.setattr("ccgram.topic_selection._flush", lambda: None)
+        try:
+            yield
+        finally:
+            install_window_store(previous)
+
     @patch(
         "ccgram.handlers.topics.window_launch_service.safe_edit", new_callable=AsyncMock
     )
@@ -256,7 +312,10 @@ class TestHandleModeSelect:
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
     @patch("ccgram.handlers.topics.window_launch_service.provider_registry")
     @patch("ccgram.handlers.topics.provider_mode_callbacks.provider_registry")
-    @patch("ccgram.handlers.topics.window_launch_service.thread_router")
+    @patch(
+        "ccgram.handlers.topics.window_launch_service.thread_router",
+        new_callable=_claim_router_spy,
+    )
     async def test_creates_window_with_yolo_mode(
         self,
         mock_tr: MagicMock,
@@ -266,7 +325,10 @@ class TestHandleModeSelect:
         mock_sm: MagicMock,
         mock_edit: AsyncMock,
         _session_adapter: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr("ccgram.multiplexer.multiplexer", mock_tmux)
+        mock_tmux.set_topic_mark = AsyncMock(return_value=True)
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = False
         mock_provider.capabilities.has_yolo_confirmation = False
@@ -280,7 +342,14 @@ class TestHandleModeSelect:
         )
         mock_tmux.stamp_pane_title = AsyncMock()
         mock_tmux.find_window_by_id = AsyncMock(
-            return_value=MagicMock(pane_current_command="codex")
+            return_value=WindowRef(
+                "@5",
+                "proj",
+                "/tmp/proj",
+                pane_current_command="codex",
+                topic_marked=True,
+                topic_mark_owner="test-owner",
+            )
         )
         mock_tmux.capabilities.native_worktrees = False
         mock_tmux.capabilities.native_agent_status = False
@@ -326,7 +395,10 @@ class TestHandleModeSelect:
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
     @patch("ccgram.handlers.topics.window_launch_service.provider_registry")
     @patch("ccgram.handlers.topics.provider_mode_callbacks.provider_registry")
-    @patch("ccgram.handlers.topics.window_launch_service.thread_router")
+    @patch(
+        "ccgram.handlers.topics.window_launch_service.thread_router",
+        new_callable=_claim_router_spy,
+    )
     async def test_claude_yolo_accepts_bypass_prompt(
         self,
         mock_tr: MagicMock,
@@ -338,7 +410,10 @@ class TestHandleModeSelect:
         mock_edit: AsyncMock,
         mock_accept_yolo: AsyncMock,
         _session_adapter: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr("ccgram.multiplexer.multiplexer", mock_tmux)
+        mock_tmux.set_topic_mark = AsyncMock(return_value=True)
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = True
         mock_provider.capabilities.has_yolo_confirmation = True
@@ -352,7 +427,14 @@ class TestHandleModeSelect:
         )
         mock_tmux.stamp_pane_title = AsyncMock()
         mock_tmux.find_window_by_id = AsyncMock(
-            return_value=MagicMock(pane_current_command="codex")
+            return_value=WindowRef(
+                "@5",
+                "proj",
+                "/tmp/proj",
+                pane_current_command="codex",
+                topic_marked=True,
+                topic_mark_owner="test-owner",
+            )
         )
         mock_tmux.capabilities.native_worktrees = False
         mock_tmux.capabilities.native_agent_status = False
@@ -361,6 +443,12 @@ class TestHandleModeSelect:
         mock_sm.get_window_state.return_value = MagicMock()
         mock_sms.wait_for_session_map_entry = AsyncMock(return_value=True)
         mock_accept_yolo.return_value = True
+        _session_adapter.resolve.return_value = (
+            SimpleNamespace(
+                foreground_argv=("claude",), provider="claude", available=True
+            ),
+            None,
+        )
 
         user_data = {"browse_path": "/tmp/proj", PENDING_THREAD_ID: 42}
         query = _make_query(data=f"{CB_MODE_SELECT}claude:yolo")
@@ -372,6 +460,7 @@ class TestHandleModeSelect:
         )
 
         mock_accept_yolo.assert_awaited_once_with("@5", _session_adapter)
+        mock_tr.commit_topic_provisioning.assert_called_once()
         mock_sms.wait_for_session_map_entry.assert_awaited_once_with(
             "@5", resolve_window_id=resolve_window_alias
         )
@@ -426,7 +515,10 @@ class TestHandleModeSelect:
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
     @patch("ccgram.handlers.topics.window_launch_service.provider_registry")
     @patch("ccgram.handlers.topics.provider_mode_callbacks.provider_registry")
-    @patch("ccgram.handlers.topics.window_launch_service.thread_router")
+    @patch(
+        "ccgram.handlers.topics.window_launch_service.thread_router",
+        new_callable=_claim_router_spy,
+    )
     async def test_forwards_pending_text(
         self,
         mock_tr: MagicMock,
@@ -437,7 +529,10 @@ class TestHandleModeSelect:
         mock_send_to_window: AsyncMock,
         mock_edit: AsyncMock,
         _session_adapter: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr("ccgram.multiplexer.multiplexer", mock_tmux)
+        mock_tmux.set_topic_mark = AsyncMock(return_value=True)
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = False
         mock_provider.capabilities.chat_first_command_path = False
@@ -450,7 +545,14 @@ class TestHandleModeSelect:
         )
         mock_tmux.stamp_pane_title = AsyncMock()
         mock_tmux.find_window_by_id = AsyncMock(
-            return_value=MagicMock(pane_current_command="claude")
+            return_value=WindowRef(
+                "@5",
+                "proj",
+                "/tmp/proj",
+                pane_current_command="claude",
+                topic_marked=True,
+                topic_mark_owner="test-owner",
+            )
         )
         mock_tmux.capabilities.native_worktrees = False
         mock_tmux.capabilities.native_agent_status = False

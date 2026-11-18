@@ -1,24 +1,25 @@
 """Provider and mode selection callbacks for the topic-creation flow.
 
-Handles CB_PROV_SELECT (select provider, then show mode picker or go direct to
-window creation) and CB_MODE_SELECT (select launch mode and create the window).
+Handles CB_PROV_SELECT (select provider, then launch in the configured mode)
+and the legacy CB_MODE_SELECT callback still attached to keyboards sent by
+older versions.
 
-Both ultimately call ``launch_window`` from ``window_launch_service``.
+Both call ``launch_window`` from ``window_launch_service`.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import structlog
 
+from ...config import config
 from ...providers import registry as provider_registry
 from ...thread_router import thread_router
 from ..callback_data import CB_MODE_SELECT, CB_PROV_SELECT
 from ..callback_helpers import get_thread_id
 from ..messaging_pipeline.message_sender import interactive_edit as safe_edit
 from .directory_browser import (
-    build_mode_picker,
     clear_browse_state,
     clear_worktree_state,
 )
@@ -91,10 +92,11 @@ async def _handle_provider_select(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """Handle CB_PROV_SELECT: select provider and show mode picker.
+    """Handle CB_PROV_SELECT: launch in the configured mode.
 
-    Providers without a YOLO flag (e.g. shell) skip the mode picker
-    and go directly to window creation with approval_mode="normal".
+    CCGRAM_DEFAULT_MODE decides between normal and YOLO; providers without a
+    permissive flag (shell, pi) always launch normally, because
+    ``_launch_options`` rejects YOLO for them.
     """
     # Lazy: providers package heavy bootstrap
     from ccgram.providers import has_yolo_mode
@@ -118,29 +120,31 @@ async def _handle_provider_select(
     ):
         return
 
-    if not has_yolo_mode(provider_name):
-        # No mode picker needed — go directly to window creation
-        clear_browse_state(context.user_data)
-        await launch_window(
-            query,
-            context,
-            WindowLaunchRequest(
-                user_id=user_id,
-                thread_id=pending_thread_id,
-                provider_name=provider_name,
-                cwd=selected_path,
-                mode="normal",
-                pending_text=(
-                    context.user_data.get(PENDING_THREAD_TEXT)
-                    if context.user_data
-                    else None
-                ),
+    # No mode picker: launch straight away in the configured default mode.
+    # CCGRAM_DEFAULT_MODE=yolo (default) uses each provider's permissive flag;
+    # providers without one always launch normally.
+    clear_browse_state(context.user_data)
+    approval_mode: Literal["normal", "yolo"] = (
+        "yolo"
+        if config.default_mode == "yolo" and has_yolo_mode(provider_name)
+        else "normal"
+    )
+    await launch_window(
+        query,
+        context,
+        WindowLaunchRequest(
+            user_id=user_id,
+            thread_id=pending_thread_id,
+            provider_name=provider_name,
+            cwd=selected_path,
+            mode=approval_mode,
+            pending_text=(
+                context.user_data.get(PENDING_THREAD_TEXT)
+                if context.user_data
+                else None
             ),
-        )
-        return
-
-    text, keyboard = build_mode_picker(selected_path, provider_name)
-    await safe_edit(query, text, reply_markup=keyboard)
+        ),
+    )
 
 
 def _parse_mode_select(data: str) -> tuple[str, str] | None:

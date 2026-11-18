@@ -1,13 +1,17 @@
 """Tests for file_handler helper functions."""
 
+import asyncio
+import errno
 import re
+import sys
 import unicodedata
-from types import SimpleNamespace
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from tempfile import mkdtemp
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from telegram.error import TimedOut
+from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 
 from ccgram.handlers import file_handler
 from ccgram.handlers.file_handler import (
@@ -192,6 +196,359 @@ class TestGeneratePhotoFilename:
     def test_format(self) -> None:
         result = _generate_photo_filename("ABCDEFGHIJKLMNOP")
         assert re.match(r"^photo_\d{8}_\d{6}_ABCDEFGH\.jpg$", result)
+
+
+@pytest.mark.parametrize("timeout_at", ["get_file", "download"])
+async def test_photo_timeout_retries_with_caption(
+    tmp_path: Path, timeout_at: str
+) -> None:
+    upload_dir = tmp_path / ".ccgram-uploads"
+    filename = "photo_test.jpg"
+    message = MagicMock()
+    message.photo = [
+        SimpleNamespace(file_unique_id="photo", file_id="fid", file_size=5)
+    ]
+    message.caption = "please\nlook\x00 here"
+    message.chat.id = -100
+    message.chat.send_action = AsyncMock()
+    message.message_thread_id = 42
+
+    attempts: list[Path] = []
+
+    async def download(path: str) -> Path:
+        dest = Path(path)
+        attempts.append(dest)
+        if timeout_at == "download" and len(attempts) == 1:
+            dest.write_bytes(b"partial")
+            # A different upload claims the intended name while this one is in flight.
+            (upload_dir / filename).write_bytes(b"other upload")
+            raise TimedOut()
+        assert not dest.exists()
+        dest.write_bytes(b"photo")
+        return dest
+
+    photo = SimpleNamespace(download_to_drive=download)
+    get_file = AsyncMock(
+        side_effect=[TimedOut() if timeout_at == "get_file" else photo, photo]
+    )
+    message.get_bot.return_value.get_file = get_file
+
+    with (
+        patch.object(
+            file_handler, "_resolve_upload_dir", return_value=("@0", upload_dir, None)
+        ),
+        patch.object(file_handler, "_generate_photo_filename", return_value=filename),
+        patch.object(file_handler.config, "is_user_allowed", return_value=True),
+        patch.object(file_handler, "adapter_for"),
+        patch.object(
+            file_handler,
+            "send_telegram_to_window",
+            new_callable=AsyncMock,
+            return_value=(True, "ok"),
+        ) as send,
+        patch.object(file_handler, "ack_reaction", new_callable=AsyncMock) as ack,
+        patch.object(file_handler, "safe_reply", new_callable=AsyncMock) as reply,
+    ):
+        await file_handler.handle_photo_message(
+            MagicMock(effective_user=SimpleNamespace(id=1), message=message),
+            MagicMock(),
+        )
+
+    assert get_file.await_args_list == [call("fid"), call("fid")]
+    saved_name = "photo_test_1.jpg" if timeout_at == "download" else filename
+    saved = upload_dir / saved_name
+    expected_files = {saved_name: b"photo"}
+    if timeout_at == "download":
+        expected_files[filename] = b"other upload"
+    assert {
+        path.name: path.read_bytes() for path in upload_dir.iterdir()
+    } == expected_files
+    assert not any(path.exists() for path in attempts)
+    send.assert_awaited_once()
+    assert send.await_args is not None
+    assert str(saved) in send.await_args.args[3]
+    assert send.await_args.args[3].endswith("\n\nUser note: please look here")
+    ack.assert_awaited_once()
+    reply.assert_awaited_once_with(
+        message, f"📷 Uploaded `.ccgram-uploads/{saved_name}`"
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "attempts"),
+    [
+        (NetworkError("reset"), 3),
+        (BadRequest("invalid file"), 1),
+        (RetryAfter(1), 1),
+        (OSError("disk full"), 1),
+    ],
+)
+async def test_download_failure_cleans_staging(
+    tmp_path: Path, error: Exception, attempts: int
+) -> None:
+    async def download(path: Path) -> None:
+        path.write_bytes(b"partial")
+        raise error
+
+    original = tmp_path / "report.txt"
+    original.write_bytes(b"previous upload")
+    message = MagicMock()
+    get_file = AsyncMock(return_value=SimpleNamespace(download_to_drive=download))
+    message.get_bot.return_value.get_file = get_file
+    delays_after_attempts: list[int] = []
+    with (
+        patch.object(
+            asyncio,
+            "sleep",
+            new_callable=AsyncMock,
+            side_effect=lambda _: delays_after_attempts.append(get_file.await_count),
+        ) as sleep,
+        patch.object(file_handler, "safe_reply", new_callable=AsyncMock) as reply,
+    ):
+        result = await file_handler._download_and_save(
+            message, tmp_path, original.name, "fid", None, "File"
+        )
+
+    assert result is None
+    assert get_file.await_args_list == [call("fid")] * attempts
+    assert delays_after_attempts == list(range(1, attempts))
+    assert all(0 < delay.args[0] <= 1 for delay in sleep.await_args_list)
+    assert list(tmp_path.iterdir()) == [original]
+    assert original.read_bytes() == b"previous upload"
+    reply.assert_awaited_once_with(message, "❌ Failed to save file.")
+
+
+async def test_download_retry_cancellation_cleans_staging(tmp_path: Path) -> None:
+    async def download(path: Path) -> None:
+        path.write_bytes(b"partial")
+        raise NetworkError("reset")
+
+    message = MagicMock()
+    get_file = AsyncMock(return_value=SimpleNamespace(download_to_drive=download))
+    message.get_bot.return_value.get_file = get_file
+    with (
+        patch.object(
+            asyncio, "sleep", new_callable=AsyncMock, side_effect=asyncio.CancelledError
+        ) as sleep,
+        patch.object(file_handler, "safe_reply", new_callable=AsyncMock) as reply,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await file_handler._download_and_save(
+            message, tmp_path, "report.txt", "fid", None, "File"
+        )
+
+    get_file.assert_awaited_once_with("fid")
+    sleep.assert_awaited_once()
+    reply.assert_not_awaited()
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    ("link_error", "notified"),
+    [(err, True) for err in sorted({errno.ENOTSUP, errno.EOPNOTSUPP, errno.EPERM})]
+    + [pytest.param(errno.ENOTSUP, False, id="notification-fails")],
+)
+async def test_upload_without_hard_links_reports_nested_path_once(
+    tmp_path: Path, link_error: int, notified: bool
+) -> None:
+    upload_dir = tmp_path / ".ccgram-uploads"
+    upload_dir.mkdir()
+    original = upload_dir / "report.txt"
+    original.write_bytes(b"previous upload")
+
+    async def download(path: Path) -> None:
+        path.write_bytes(b"complete download")
+
+    message = MagicMock(caption=None, message_thread_id=42)
+    message.chat.id = -100
+    message.chat.send_action = AsyncMock()
+    get_file = AsyncMock(return_value=SimpleNamespace(download_to_drive=download))
+    message.get_bot.return_value.get_file = get_file
+
+    with (
+        patch.object(sys, "platform", "linux"),
+        patch.object(
+            Path, "hardlink_to", side_effect=OSError(link_error, "not supported")
+        ),
+        patch.object(
+            file_handler, "_resolve_upload_dir", return_value=("@0", upload_dir, None)
+        ),
+        patch.object(
+            file_handler,
+            "send_telegram_to_window",
+            new_callable=AsyncMock,
+            return_value=(notified, "" if notified else "agent unavailable"),
+        ) as send,
+        patch.object(file_handler, "ack_reaction", new_callable=AsyncMock) as ack,
+        patch.object(file_handler, "safe_reply", new_callable=AsyncMock) as reply,
+    ):
+        await file_handler._upload_and_notify(
+            message,
+            1,
+            42,
+            original.name,
+            "fid",
+            None,
+            "File",
+            "see {path}",
+            "📎",
+            adapter=MagicMock(),
+        )
+
+    get_file.assert_awaited_once_with("fid")
+    [saved] = list(upload_dir.glob("upload-*/*"))
+    assert set(upload_dir.iterdir()) == {original, saved.parent}
+    assert saved.read_bytes() == b"complete download"
+    assert original.read_bytes() == b"previous upload"
+    send.assert_awaited_once()
+    assert send.await_args is not None
+    assert send.await_args.args[3] == f"see {saved}"
+    rel_path = saved.relative_to(tmp_path)
+    if notified:
+        ack.assert_awaited_once()
+        reply.assert_awaited_once_with(message, f"📎 Uploaded `{rel_path}`")
+    else:
+        ack.assert_not_awaited()
+        reply.assert_awaited_once_with(
+            message,
+            f"❌ Saved `{rel_path}` but failed to notify the agent: agent unavailable",
+        )
+
+
+@pytest.mark.parametrize(
+    ("platform", "link_error", "fallback_failure"),
+    [
+        ("linux", errno.EEXIST, None),
+        ("linux", errno.EIO, None),
+        ("linux", errno.EACCES, None),
+        ("linux", errno.ENOSYS, None),
+        ("darwin", errno.EPERM, None),
+        ("darwin", errno.ENOTSUP, "rename"),
+        ("linux", errno.EPERM, "mkdir"),
+        ("linux", errno.EPERM, "rename"),
+    ],
+)
+async def test_publication_failure_cleans_up(
+    tmp_path: Path, platform: str, link_error: int, fallback_failure: str | None
+) -> None:
+    message = MagicMock()
+    download = AsyncMock(side_effect=lambda path: path.write_bytes(b"complete"))
+    get_file = AsyncMock(return_value=SimpleNamespace(download_to_drive=download))
+    message.get_bot.return_value.get_file = get_file
+    with (
+        patch.object(sys, "platform", platform),
+        patch.object(
+            Path, "hardlink_to", side_effect=OSError(link_error, "link failed")
+        ),
+        patch.object(
+            file_handler,
+            "mkdtemp",
+            wraps=mkdtemp,
+            side_effect=PermissionError(errno.EACCES, "mkdir denied")
+            if fallback_failure == "mkdir"
+            else None,
+        ) as make_folder,
+        patch.object(
+            Path, "rename", side_effect=PermissionError(errno.EACCES, "rename denied")
+        ) as rename,
+        patch.object(file_handler, "safe_reply", new_callable=AsyncMock) as reply,
+    ):
+        result = await file_handler._download_and_save(
+            message, tmp_path, "report.txt", "fid", None, "File"
+        )
+
+    assert result is None
+    assert make_folder.call_count == (1 if fallback_failure else 0)
+    assert rename.call_count == (1 if fallback_failure == "rename" else 0)
+    assert not list(tmp_path.iterdir())
+    get_file.assert_awaited_once_with("fid")
+    download.assert_awaited_once()
+    reply.assert_awaited_once_with(message, "❌ Failed to save file.")
+
+
+async def test_download_rechecks_upload_directory_before_publication(
+    tmp_path: Path,
+) -> None:
+    message = MagicMock()
+    download = AsyncMock(side_effect=lambda path: path.write_bytes(b"complete"))
+    get_file = AsyncMock(return_value=SimpleNamespace(download_to_drive=download))
+    message.get_bot.return_value.get_file = get_file
+    real_is_symlink = Path.is_symlink
+
+    def is_symlink(path: Path) -> bool:
+        # Simulate only the check result, without changing the filesystem.
+        return bool(download.await_count) if path == tmp_path else real_is_symlink(path)
+
+    with (
+        patch.object(Path, "is_symlink", is_symlink),
+        patch.object(Path, "hardlink_to") as link,
+        patch.object(Path, "rename") as rename,
+        patch.object(file_handler, "safe_reply", new_callable=AsyncMock) as reply,
+    ):
+        result = await file_handler._download_and_save(
+            message, tmp_path, "report.txt", "fid", None, "File"
+        )
+
+    assert result is None
+    get_file.assert_awaited_once_with("fid")
+    download.assert_awaited_once()
+    link.assert_not_called()
+    rename.assert_not_called()
+    assert not list(tmp_path.iterdir())
+    reply.assert_awaited_once_with(message, "❌ Failed to save file.")
+
+
+@pytest.mark.parametrize("file_size", [None, 5])
+async def test_download_size_limits(tmp_path: Path, file_size: int | None) -> None:
+    async def download(path: Path) -> None:
+        path.write_bytes(b"large")
+
+    message = MagicMock()
+    get_file = AsyncMock(return_value=SimpleNamespace(download_to_drive=download))
+    message.get_bot.return_value.get_file = get_file
+    with (
+        patch.object(file_handler, "_MAX_FILE_SIZE", 4),
+        patch.object(file_handler, "safe_reply", new_callable=AsyncMock) as reply,
+    ):
+        result = await file_handler._download_and_save(
+            message, tmp_path, "report.txt", "fid", file_size, "File"
+        )
+
+    assert result is None
+    assert get_file.await_count == (1 if file_size is None else 0)
+    assert not list(tmp_path.iterdir())
+    reply.assert_awaited_once()
+    assert reply.await_args is not None
+    assert "File too large" in reply.await_args.args[1]
+
+
+@pytest.mark.parametrize("symlink_dir", [True, False])
+async def test_download_rejects_symlink_escape(
+    tmp_path: Path, symlink_dir: bool
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    upload = tmp_path / "upload"
+    if symlink_dir:
+        upload.symlink_to(target, target_is_directory=True)
+    else:
+        upload.mkdir()
+        (upload / "report.txt").symlink_to(target / "report.txt")
+    message = MagicMock()
+    get_file = AsyncMock()
+    message.get_bot.return_value.get_file = get_file
+    with patch.object(file_handler, "safe_reply", new_callable=AsyncMock) as reply:
+        result = await file_handler._download_and_save(
+            message, upload, "report.txt", "fid", None, "File"
+        )
+
+    assert result is None
+    get_file.assert_not_awaited()
+    assert not list(target.iterdir())
+    reply.assert_awaited_once_with(
+        message,
+        "❌ Upload directory is invalid." if symlink_dir else "❌ Invalid filename.",
+    )
 
 
 class TestUploadTypingFailure:

@@ -76,14 +76,17 @@ def test_multiplexer_package_is_covered() -> None:
     assert expected <= set(_MODULES)
 
 
-def test_multiplexer_base_imports_no_backend_in_clean_interpreter() -> None:
-    """Importing ``multiplexer.base`` must not pull in a backend or libtmux."""
+@pytest.mark.parametrize(
+    "module", ["ccgram.multiplexer.base", "ccgram.event_stream_monitor"]
+)
+def test_neutral_modules_import_no_adapters_in_clean_interpreter(module: str) -> None:
+    """Neutral contracts and observation also work for non-Telegram hosts."""
     probe = (
-        "import sys; import ccgram.multiplexer.base; "
-        "bad=[m for m in sys.modules "
-        "if m.startswith('ccgram.multiplexer.tmux') "
-        "or m.startswith('ccgram.multiplexer.herdr') "
-        "or m=='libtmux']; "
+        f"import sys; import {module}; "
+        "bad=[m for m in sys.modules if m.startswith(("
+        "'ccgram.multiplexer.tmux', 'ccgram.multiplexer.herdr', "
+        "'ccgram.multiplexer.agterm', 'ccgram.handlers', 'ccgram.telegram', "
+        "'telegram')) or m=='libtmux']; "
         "assert not bad, bad"
     )
     result = subprocess.run(
@@ -93,6 +96,6 @@ def test_multiplexer_base_imports_no_backend_in_clean_interpreter() -> None:
         text=True,
     )
     assert result.returncode == 0, (
-        "multiplexer.base must import no backend/libtmux.\n"
+        f"{module} must import no backend, Telegram, or handler implementation.\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )

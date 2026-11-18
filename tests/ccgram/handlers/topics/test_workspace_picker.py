@@ -93,6 +93,34 @@ _WORKSPACES = [
 
 
 class TestShowWorkspacePickerOrProvider:
+    @pytest.fixture(autouse=True)
+    def _workspace_picker_on(self, monkeypatch: pytest.MonkeyPatch):
+        """The picker is opt-in; these tests exercise the on state."""
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "workspace_picker", True, raising=False)
+        yield
+
+    @patch(
+        "ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock
+    )
+    @patch("ccgram.handlers.topics.workspace_callbacks.tmux_manager")
+    async def test_picker_off_by_default_skips_to_provider(
+        self, mock_mux: MagicMock, mock_edit: AsyncMock, tmp_path: Path
+    ) -> None:
+        from ccgram.config import config
+
+        config.workspace_picker = False
+        mock_mux.capabilities = _capabilities(native_agent_status=True)
+        mock_mux.list_workspaces = AsyncMock(return_value=_WORKSPACES)
+
+        await _show_workspace_picker_or_provider(
+            _make_query(), str(tmp_path), _make_context({})
+        )
+
+        assert "Select Provider" in mock_edit.call_args[0][1]
+        mock_mux.list_workspaces.assert_not_awaited()
+
     @patch(
         "ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock
     )
@@ -318,7 +346,12 @@ class TestWorkspaceIdThreaded:
                 )
             )
             adapter.resolve = AsyncMock(
-                return_value=(SimpleNamespace(foreground_argv=("claude",)), None)
+                return_value=(
+                    SimpleNamespace(
+                        foreground_argv=("claude",), provider="claude", available=True
+                    ),
+                    None,
+                )
             )
             mock_mux.stamp_pane_title = AsyncMock()
             mock_mux.capabilities.native_worktrees = False

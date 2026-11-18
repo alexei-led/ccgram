@@ -29,6 +29,8 @@ import structlog
 from telegram import Bot, Message
 from telegram.error import TelegramError
 
+from .session_protocol.messages import SourceEntry, parse_records
+
 logger = structlog.get_logger()
 
 # --- Log throttling -----------------------------------------------------------
@@ -90,6 +92,7 @@ def log_throttle_sweep(
 
 
 CCGRAM_DIR_ENV = "CCGRAM_DIR"
+TMUX_WINDOW_ID_FORMAT = "#{window_id}"
 
 # Maximum number of JSONL lines to scan when extracting session metadata.
 _SCAN_LINES = 20
@@ -147,6 +150,11 @@ def atomic_write_json(path: Path, data: Any, indent: int = 2) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, str(path))
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)
@@ -183,9 +191,10 @@ def _extract_metadata_from_entry(data: dict, cwd: str, summary: str) -> tuple[st
         if found_cwd and isinstance(found_cwd, str):
             cwd = found_cwd
     if not summary and data.get("type") == "user":
-        msg = data.get("message", {})
-        if isinstance(msg, dict):
-            summary = _extract_user_text(msg)
+        records, _ = parse_records([SourceEntry(0, data)], "claude")
+        for _, record in records:
+            if record.role == "user":
+                summary = _extract_user_text({"content": list(record.parts)})
     return cwd, summary
 
 

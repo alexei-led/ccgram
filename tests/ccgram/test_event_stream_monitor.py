@@ -1,4 +1,4 @@
-"""Unit tests for the push event-stream consumer (EventStreamMonitor)."""
+"""Unit tests for the neutral push event-stream consumer."""
 
 from __future__ import annotations
 
@@ -12,50 +12,70 @@ from ccgram.multiplexer.base import AgentStatus, MuxEvent
 
 async def test_dispatch_agent_status_updates_cache() -> None:
     agent_status_cache.reset()
-    monitor = EventStreamMonitor(MagicMock(), set)
+    notify = AsyncMock()
+    monitor = EventStreamMonitor(set, on_window_died=notify)
     status = AgentStatus("working", "codex", "compiling")
     await monitor._dispatch(MuxEvent("agent_status", "w2:t1", "w2:p1", status))
     assert agent_status_cache.get_status("w2:t1") == status
+    notify.assert_not_awaited()
 
 
-async def test_dispatch_window_died_clears_cache_and_notifies_bound_users() -> None:
+async def test_dispatch_window_died_clears_cache_before_awaiting_callback() -> None:
     agent_status_cache.reset()
     agent_status_cache.set_status("w2:t1", AgentStatus("working"))
-    monitor = EventStreamMonitor(MagicMock(), lambda: {"w2:t1"})
 
-    notify = AsyncMock()
-    fake_router = MagicMock()
-    fake_router.iter_thread_bindings.return_value = [
-        (7, 42, "w2:t1"),
-        (7, 99, "w9:t9"),  # different window — must not be notified
-    ]
-    with (
-        patch(
-            "ccgram.handlers.polling.window_tick.apply._handle_dead_window_notification",
-            notify,
-        ),
-        patch("ccgram.thread_router.thread_router", fake_router),
-        patch("ccgram.event_stream_monitor.unwrap_bot", return_value="BOT"),
-    ):
-        await monitor._dispatch(MuxEvent("window_died", "w2:t1"))
+    async def notify(window_id: str) -> None:
+        assert agent_status_cache.get_status(window_id) is None
 
-    assert agent_status_cache.get_status("w2:t1") is None
-    notify.assert_awaited_once_with("BOT", 7, 42, "w2:t1")
+    callback = AsyncMock(side_effect=notify)
+    monitor = EventStreamMonitor(lambda: {"w2:t1"}, on_window_died=callback)
+    await monitor._dispatch(MuxEvent("window_died", "w2:t1"))
+
+    callback.assert_awaited_once_with("w2:t1")
 
 
-async def test_stop_and_wait_awaits_event_producer() -> None:
+async def test_failed_death_callback_does_not_drop_later_events() -> None:
+    agent_status_cache.reset()
+    status = AgentStatus("idle")
+
+    async def events(_ids):
+        yield MuxEvent("window_died", "dead")
+        yield MuxEvent("agent_status", "live", status=status)
+
+    callback = AsyncMock(side_effect=RuntimeError("transport unavailable"))
+    monitor = EventStreamMonitor(lambda: {"dead", "live"}, on_window_died=callback)
+    with patch("ccgram.event_stream_monitor.mux") as mux:
+        mux.watch_events = events
+        await monitor._consume({"dead", "live"})
+
+    callback.assert_awaited_once_with("dead")
+    assert agent_status_cache.get_status("live") == status
+
+
+async def test_stop_and_wait_cancels_inflight_death_callback() -> None:
     started = asyncio.Event()
+    cancelled = asyncio.Event()
 
-    async def fake_supervisor() -> None:
+    async def events(_ids):
+        yield MuxEvent("window_died", "target")
+
+    async def notify(_window_id: str) -> None:
         started.set()
-        await asyncio.Event().wait()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
 
-    monitor = EventStreamMonitor(MagicMock(), set)
-    monitor._running = True
-    monitor._task = asyncio.create_task(fake_supervisor())
-    await started.wait()
-    await monitor.stop_and_wait()
+    monitor = EventStreamMonitor(lambda: {"target"}, on_window_died=notify)
+    with patch("ccgram.event_stream_monitor.mux") as mux:
+        mux.watch_events = events
+        monitor.start()
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1)
+        finally:
+            await monitor.stop_and_wait()
 
+    assert cancelled.is_set()
     assert monitor._task is None
 
 
@@ -72,15 +92,13 @@ async def test_supervisor_backs_off_after_normal_stream_eof(monkeypatch) -> None
     fake_mux = MagicMock()
     fake_mux.watch_events = eof_watch
     monkeypatch.setattr("ccgram.event_stream_monitor.mux", fake_mux)
-    monitor = EventStreamMonitor(MagicMock(), lambda: {"target"})
+    monitor = EventStreamMonitor(lambda: {"target"}, on_window_died=AsyncMock())
     monitor.start()
     try:
         await asyncio.sleep(0.055)
     finally:
-        monitor.stop()
-        await asyncio.sleep(0)
+        await monitor.stop_and_wait()
 
-    # EOF is delayed by the supervisor interval rather than a hot-loop.
     assert 1 <= starts <= 3
 
 
@@ -90,8 +108,8 @@ async def test_supervisor_restarts_watch_on_set_change(monkeypatch) -> None:
 
     async def fake_watch(window_ids):
         started.append(list(window_ids))
-        await asyncio.Event().wait()  # block until cancelled (live stream)
-        yield  # pragma: no cover — unreachable; makes this an async generator
+        await asyncio.Event().wait()
+        yield  # pragma: no cover — makes this an async generator
 
     monkeypatch.setattr("ccgram.event_stream_monitor._SET_POLL_INTERVAL", 0.01)
     fake_mux = MagicMock()
@@ -99,15 +117,14 @@ async def test_supervisor_restarts_watch_on_set_change(monkeypatch) -> None:
     monkeypatch.setattr("ccgram.event_stream_monitor.mux", fake_mux)
 
     holder = {"ids": {"w2:t1"}}
-    monitor = EventStreamMonitor(MagicMock(), lambda: holder["ids"])
+    monitor = EventStreamMonitor(lambda: holder["ids"], on_window_died=AsyncMock())
     monitor.start()
     try:
-        await asyncio.sleep(0.05)  # start watch with {w2:t1}
-        holder["ids"] = {"w2:t1", "w3:t1"}  # change the bound set
-        await asyncio.sleep(0.05)  # supervisor detects + restarts
+        await asyncio.sleep(0.05)
+        holder["ids"] = {"w2:t1", "w3:t1"}
+        await asyncio.sleep(0.05)
     finally:
-        monitor.stop()
-        await asyncio.sleep(0.02)
+        await monitor.stop_and_wait()
 
     assert ["w2:t1"] in started
     assert sorted(["w2:t1", "w3:t1"]) in [sorted(s) for s in started]

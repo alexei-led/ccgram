@@ -22,7 +22,9 @@ Public API:
 from __future__ import annotations
 
 import inspect
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast, runtime_checkable
 
@@ -30,6 +32,30 @@ from telegram import Bot, BotCommand, ChatFullInfo, File, ForumTopic, Message, U
 from telegram._botcommandscope import BotCommandScope
 from telegram._files.inputmedia import InputMedia
 from telegram._reaction import ReactionType
+
+
+class DeliveryWithdrawnError(Exception):
+    """The owning topic changed before an outbound request was dispatched."""
+
+
+_delivery_check: ContextVar[Callable[[], bool] | None] = ContextVar(
+    "delivery_check", default=None
+)
+
+
+@contextmanager
+def delivery_guard(check: Callable[[], bool]) -> Iterator[None]:
+    token = _delivery_check.set(check)
+    try:
+        yield
+    finally:
+        _delivery_check.reset(token)
+
+
+def check_delivery() -> None:
+    check = _delivery_check.get()
+    if check is not None and not check():
+        raise DeliveryWithdrawnError()
 
 
 @runtime_checkable
@@ -143,6 +169,13 @@ class TelegramClient(Protocol):
         **kwargs: Any,
     ) -> bool: ...
 
+    async def reopen_forum_topic(
+        self,
+        chat_id: int | str,
+        message_thread_id: int,
+        **kwargs: Any,
+    ) -> bool: ...
+
     async def delete_forum_topic(
         self,
         chat_id: int | str,
@@ -196,6 +229,7 @@ class PTBTelegramClient:
     async def send_message(
         self, chat_id: int | str, text: str, **kwargs: Any
     ) -> Message:
+        check_delivery()
         return await self._bot.send_message(
             chat_id=chat_id,
             text=text,
@@ -209,6 +243,7 @@ class PTBTelegramClient:
         message_id: int | None = None,
         **kwargs: Any,
     ) -> Message | bool:
+        check_delivery()
         return await self._bot.edit_message_text(
             text=text, chat_id=chat_id, message_id=message_id, **kwargs
         )
@@ -220,6 +255,7 @@ class PTBTelegramClient:
         message_id: int | None = None,
         **kwargs: Any,
     ) -> Message | bool:
+        check_delivery()
         return await self._bot.edit_message_media(
             media=media, chat_id=chat_id, message_id=message_id, **kwargs
         )
@@ -230,6 +266,7 @@ class PTBTelegramClient:
         message_id: int | None = None,
         **kwargs: Any,
     ) -> Message | bool:
+        check_delivery()
         return await self._bot.edit_message_caption(
             chat_id=chat_id, message_id=message_id, **kwargs
         )
@@ -237,6 +274,7 @@ class PTBTelegramClient:
     async def delete_message(
         self, chat_id: int | str, message_id: int, **kwargs: Any
     ) -> bool:
+        check_delivery()
         return await self._bot.delete_message(
             chat_id=chat_id, message_id=message_id, **kwargs
         )
@@ -244,6 +282,7 @@ class PTBTelegramClient:
     async def send_photo(
         self, chat_id: int | str, photo: Any, **kwargs: Any
     ) -> Message:
+        check_delivery()
         return await self._bot.send_photo(
             chat_id=chat_id,
             photo=photo,
@@ -253,6 +292,7 @@ class PTBTelegramClient:
     async def send_document(
         self, chat_id: int | str, document: Any, **kwargs: Any
     ) -> Message:
+        check_delivery()
         return await self._bot.send_document(
             chat_id=chat_id,
             document=document,
@@ -262,6 +302,7 @@ class PTBTelegramClient:
     async def send_chat_action(
         self, chat_id: int | str, action: str, **kwargs: Any
     ) -> bool:
+        check_delivery()
         return await self._bot.send_chat_action(
             chat_id=chat_id, action=action, **kwargs
         )
@@ -269,6 +310,7 @@ class PTBTelegramClient:
     async def send_voice(
         self, chat_id: int | str, voice: Any, **kwargs: Any
     ) -> Message:
+        check_delivery()
         return await self._bot.send_voice(
             chat_id=chat_id,
             voice=voice,
@@ -282,27 +324,33 @@ class PTBTelegramClient:
         reaction: Sequence[ReactionType | str] | ReactionType | str | None = None,
         **kwargs: Any,
     ) -> bool:
+        check_delivery()
         return await self._bot.set_message_reaction(
             chat_id=chat_id, message_id=message_id, reaction=reaction, **kwargs
         )
 
     async def get_chat(self, chat_id: int | str, **kwargs: Any) -> ChatFullInfo:
+        check_delivery()
         return await self._bot.get_chat(chat_id=chat_id, **kwargs)
 
     async def get_me(self, **kwargs: Any) -> User:
+        check_delivery()
         return await self._bot.get_me(**kwargs)
 
     async def get_file(self, file_id: str, **kwargs: Any) -> File:
+        check_delivery()
         return await self._bot.get_file(file_id=file_id, **kwargs)
 
     async def create_forum_topic(
         self, chat_id: int | str, name: str, **kwargs: Any
     ) -> ForumTopic:
+        check_delivery()
         return await self._bot.create_forum_topic(chat_id=chat_id, name=name, **kwargs)
 
     async def edit_forum_topic(
         self, chat_id: int | str, message_thread_id: int, **kwargs: Any
     ) -> bool:
+        check_delivery()
         return await self._bot.edit_forum_topic(
             chat_id=chat_id, message_thread_id=message_thread_id, **kwargs
         )
@@ -310,13 +358,23 @@ class PTBTelegramClient:
     async def close_forum_topic(
         self, chat_id: int | str, message_thread_id: int, **kwargs: Any
     ) -> bool:
+        check_delivery()
         return await self._bot.close_forum_topic(
+            chat_id=chat_id, message_thread_id=message_thread_id, **kwargs
+        )
+
+    async def reopen_forum_topic(
+        self, chat_id: int | str, message_thread_id: int, **kwargs: Any
+    ) -> bool:
+        check_delivery()
+        return await self._bot.reopen_forum_topic(
             chat_id=chat_id, message_thread_id=message_thread_id, **kwargs
         )
 
     async def delete_forum_topic(
         self, chat_id: int | str, message_thread_id: int, **kwargs: Any
     ) -> bool:
+        check_delivery()
         return await self._bot.delete_forum_topic(
             chat_id=chat_id, message_thread_id=message_thread_id, **kwargs
         )
@@ -324,6 +382,7 @@ class PTBTelegramClient:
     async def unpin_all_forum_topic_messages(
         self, chat_id: int | str, message_thread_id: int, **kwargs: Any
     ) -> bool:
+        check_delivery()
         return await self._bot.unpin_all_forum_topic_messages(
             chat_id=chat_id, message_thread_id=message_thread_id, **kwargs
         )
@@ -334,6 +393,7 @@ class PTBTelegramClient:
         language_code: str | None = None,
         **kwargs: Any,
     ) -> bool:
+        check_delivery()
         return await self._bot.delete_my_commands(
             scope=scope, language_code=language_code, **kwargs
         )
@@ -345,6 +405,7 @@ class PTBTelegramClient:
         language_code: str | None = None,
         **kwargs: Any,
     ) -> bool:
+        check_delivery()
         return await self._bot.set_my_commands(
             commands=commands, scope=scope, language_code=language_code, **kwargs
         )
@@ -375,6 +436,7 @@ class FakeTelegramClient:
     returns: dict[str, Any] = field(default_factory=dict)
 
     def _record(self, method: str, kwargs: dict[str, Any]) -> Any:
+        check_delivery()
         self.calls.append(_FakeCall(method=method, kwargs=dict(kwargs)))
         if method in self.returns:
             spec = self.returns[method]
@@ -558,6 +620,14 @@ class FakeTelegramClient:
             {"chat_id": chat_id, "message_thread_id": message_thread_id, **kwargs},
         )
 
+    async def reopen_forum_topic(
+        self, chat_id: int | str, message_thread_id: int, **kwargs: Any
+    ) -> bool:
+        return self._record(
+            "reopen_forum_topic",
+            {"chat_id": chat_id, "message_thread_id": message_thread_id, **kwargs},
+        )
+
     async def delete_forum_topic(
         self, chat_id: int | str, message_thread_id: int, **kwargs: Any
     ) -> bool:
@@ -611,6 +681,7 @@ _DEFAULT_RETURNS: dict[str, Any] = {
     "set_message_reaction": True,
     "edit_forum_topic": True,
     "close_forum_topic": True,
+    "reopen_forum_topic": True,
     "delete_forum_topic": True,
     "unpin_all_forum_topic_messages": True,
     "delete_my_commands": True,

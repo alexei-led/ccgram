@@ -6,10 +6,21 @@ messages; this snapshot provides a reliable fallback.
 """
 
 import json
+import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+# /status must not parse a whole rollout: Codex rollouts reach hundreds of MB.
+# The snapshot reads session_meta from the head, the latest token_count and
+# timestamp from a bounded tail, and counts lines with a byte scan. Upgrade
+# trigger: if one turn pushes the last token_count past the tail window, the
+# snapshot shows "token stats: unavailable"; raise _TAIL_MAX_BYTES then.
+# session_meta shares the cap: a longer first line reads as "unknown".
+_TAIL_MAX_BYTES = 8 * 1024 * 1024
+_READ_BLOCK_BYTES = 1024 * 1024
+_HEAD_MAX_BYTES = _TAIL_MAX_BYTES
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -75,6 +86,82 @@ def _iter_json_entries(
                 yield parsed
 
 
+def _count_lines(path: Path) -> int:
+    """Count transcript lines with a byte scan; no JSON parsing.
+
+    Matches the parsed-entry count for well-formed rollouts. Blank or
+    unparsable lines are counted too, which the old full parse skipped.
+    """
+    count = 0
+    last = b""
+    with path.open("rb") as handle:
+        while block := handle.read(_READ_BLOCK_BYTES):
+            count += block.count(b"\n")
+            last = block[-1:]
+    return count + (1 if last and last != b"\n" else 0)
+
+
+def _read_session_meta(path: Path) -> dict[str, Any]:
+    """Return the first-line ``session_meta`` payload, as the provider reads it."""
+    with path.open("rb") as handle:
+        first = handle.readline(_HEAD_MAX_BYTES)
+    entry = _parse_json_object(first.decode("utf-8", errors="replace"))
+    if entry is None or entry.get("type") != "session_meta":
+        return {}
+    return _as_dict(entry.get("payload"))
+
+
+def _read_tail_state(
+    path: Path,
+) -> tuple[str, dict[str, Any], dict[str, Any], bool]:
+    """Find the newest timestamp, token info and rate limits, scanning backwards.
+
+    ``info`` and ``rate_limits`` are independent: Codex can write a
+    ``token_count`` with ``info: null`` that still carries fresh limits. The
+    limits come from the newest ``token_count`` (none when it has none, so an
+    older, possibly reset window is never shown as current); ``info`` comes
+    from the newest event that has it. Reads blocks from the end until the
+    timestamp and info are found or ``_TAIL_MAX_BYTES`` of the file were
+    scanned. Returns ``(timestamp, token_info, rate_limits, saw_entry)``.
+    """
+    last_timestamp = ""
+    token_info: dict[str, Any] = {}
+    rate_limits: dict[str, Any] = {}
+    seen_token_count = False
+    saw_entry = False
+    with path.open("rb") as handle:
+        size = handle.seek(0, os.SEEK_END)
+        floor = max(0, size - _TAIL_MAX_BYTES)
+        pos = size
+        carry = b""
+        while pos > floor and not (last_timestamp and token_info):
+            start = max(floor, pos - _READ_BLOCK_BYTES)
+            handle.seek(start)
+            lines = (handle.read(pos - start) + carry).split(b"\n")
+            pos = start
+            # Unless the file start is in view, the first piece may be cut mid-line.
+            carry = lines.pop(0) if pos > 0 else b""
+            for raw in reversed(lines):
+                entry = _parse_json_object(raw.decode("utf-8", errors="replace"))
+                if entry is None:
+                    continue
+                saw_entry = True
+                timestamp = entry.get("timestamp")
+                if not last_timestamp and isinstance(timestamp, str) and timestamp:
+                    last_timestamp = timestamp
+                payload = _as_dict(entry.get("payload"))
+                if entry.get("type") == "event_msg" and payload.get("type") == (
+                    "token_count"
+                ):
+                    if not seen_token_count:
+                        seen_token_count = True
+                        rate_limits = _as_dict(payload.get("rate_limits"))
+                    token_info = token_info or _as_dict(payload.get("info"))
+                if last_timestamp and token_info:
+                    break
+    return last_timestamp, token_info, rate_limits, saw_entry
+
+
 def _entry_has_assistant_output(entry: dict[str, Any]) -> bool:
     """True when entry contains assistant-visible output."""
     entry_type = entry.get("type")
@@ -120,11 +207,11 @@ def has_codex_assistant_output_since(
     return False
 
 
-def _format_token_lines(last_token_info: dict[str, Any]) -> list[str]:
-    """Format token and rate-limit lines."""
-    total_usage = _as_dict(last_token_info.get("total_token_usage"))
+def _format_token_lines(token_info: dict[str, Any]) -> list[str]:
+    """Format token totals and the current context-window use."""
+    total_usage = _as_dict(token_info.get("total_token_usage"))
     if not total_usage:
-        return ["- token stats: unavailable (no `token_count` event yet)"]
+        return ["- token stats: unavailable (no recent `token_count` event)"]
 
     lines = [
         "- tokens (total): "
@@ -135,30 +222,51 @@ def _format_token_lines(last_token_info: dict[str, Any]) -> list[str]:
         f"total `{_fmt_int(total_usage.get('total_tokens'))}`"
     ]
 
-    total_tokens = _as_int(total_usage.get("total_tokens"))
-    context_window = _as_int(last_token_info.get("model_context_window"))
-    if total_tokens is not None and context_window is not None and context_window > 0:
-        usage_pct = (total_tokens / context_window) * 100
+    # The window holds the last request's context, not the session's running
+    # total, which passes the window on long sessions.
+    context_tokens = _as_int(
+        _as_dict(token_info.get("last_token_usage")).get("total_tokens")
+    )
+    context_window = _as_int(token_info.get("model_context_window"))
+    if context_tokens is not None and context_window is not None and context_window > 0:
+        usage_pct = (context_tokens / context_window) * 100
         lines.append(
             "- context window: "
-            f"`{total_tokens:,}` / `{context_window:,}` ({usage_pct:.1f}%)"
+            f"`{context_tokens:,}` / `{context_window:,}` ({usage_pct:.1f}%)"
         )
+    return lines
 
-    rate_limits = _as_dict(last_token_info.get("rate_limits"))
-    primary = _as_dict(rate_limits.get("primary"))
-    secondary = _as_dict(rate_limits.get("secondary"))
-    if primary:
-        lines.append(
-            "- primary limit: "
-            f"`{primary.get('used_percent', '?')}%` used, "
-            f"reset `{_fmt_epoch_utc(primary.get('resets_at'))}`"
-        )
-    if secondary:
-        lines.append(
-            "- secondary limit: "
-            f"`{secondary.get('used_percent', '?')}%` used, "
-            f"reset `{_fmt_epoch_utc(secondary.get('resets_at'))}`"
-        )
+
+_MINUTES_PER_HOUR = 60
+_MINUTES_PER_DAY = 24 * _MINUTES_PER_HOUR
+_MINUTES_PER_WEEK = 7 * _MINUTES_PER_DAY
+
+
+def _limit_label(limit: dict[str, Any], fallback: str) -> str:
+    """Name a rate-limit window from ``window_minutes``, else *fallback*."""
+    minutes = _as_int(limit.get("window_minutes"))
+    if minutes is None or minutes <= 0:
+        return fallback
+    if minutes == _MINUTES_PER_WEEK:
+        return "weekly"
+    if minutes % _MINUTES_PER_DAY == 0:
+        return f"{minutes // _MINUTES_PER_DAY}d"
+    if minutes % _MINUTES_PER_HOUR == 0:
+        return f"{minutes // _MINUTES_PER_HOUR}h"
+    return f"{minutes}m"
+
+
+def _format_rate_limit_lines(rate_limits: dict[str, Any]) -> list[str]:
+    """Format one line per rate-limit window present."""
+    lines = []
+    for key in ("primary", "secondary"):
+        limit = _as_dict(rate_limits.get(key))
+        if limit:
+            lines.append(
+                f"- {_limit_label(limit, key)} limit: "
+                f"`{'?' if limit.get('used_percent') is None else limit['used_percent']}%` used, "
+                f"reset `{_fmt_epoch_utc(limit.get('resets_at'))}`"
+            )
     return lines
 
 
@@ -177,31 +285,14 @@ def build_codex_status_snapshot(
     if not path.exists():
         return None
 
-    entry_count = 0
-    last_timestamp = ""
-    session_meta: dict[str, Any] = {}
-    last_token_info: dict[str, Any] = {}
-
     try:
-        for entry in _iter_json_entries(path):
-            entry_count += 1
-            timestamp = entry.get("timestamp")
-            if isinstance(timestamp, str) and timestamp:
-                last_timestamp = timestamp
-
-            payload = _as_dict(entry.get("payload"))
-            entry_type = entry.get("type")
-            if entry_type == "session_meta" and payload:
-                session_meta = payload
-                continue
-            if entry_type == "event_msg" and payload.get("type") == "token_count":
-                info = _as_dict(payload.get("info"))
-                if info:
-                    last_token_info = info
+        entry_count = _count_lines(path)
+        session_meta = _read_session_meta(path)
+        last_timestamp, token_info, rate_limits, saw_entry = _read_tail_state(path)
     except OSError:
         return None
 
-    if entry_count == 0:
+    if not (saw_entry or session_meta):
         return None
 
     resolved_session = (
@@ -229,7 +320,8 @@ def build_codex_status_snapshot(
     ]
     if last_timestamp:
         lines.append(f"- last transcript event: `{last_timestamp}`")
-    lines.extend(_format_token_lines(last_token_info))
+    lines.extend(_format_token_lines(token_info))
+    lines.extend(_format_rate_limit_lines(rate_limits))
 
     lines.append(
         "_Note: Codex `/status` may not emit transcript messages; this is a transcript snapshot._"

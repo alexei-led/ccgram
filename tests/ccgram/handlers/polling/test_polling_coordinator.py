@@ -156,6 +156,9 @@ class TestStatusPollLoopDelegatesPeriodicTasks:
         ctx.mocks["tick_window"].assert_not_called()
         ctx.mocks["run_periodic"].assert_not_called()
         ctx.mocks["run_lifecycle"].assert_not_called()
+        # Every tick hits the same outage; the skip notice is throttled per key.
+        ctx.mocks["log_throttled"].assert_called_once()
+        assert ctx.mocks["log_throttled"].call_args.args[1] == "poll-listing"
 
 
 class TestStatusPollLoopPassesWindowLookup:

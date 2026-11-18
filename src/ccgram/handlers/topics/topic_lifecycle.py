@@ -23,7 +23,9 @@ from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ...multiplexer.base import canonical_window_id
 from ...utils import log_throttled
-from ...window_state_ports import legacy_state
+from ...window_state_ports import legacy_state, lifecycle_state
+from ...topic_selection import detach_topic_target
+from .. import topic_pause
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ..callback_tokens import revoke_window_tokens
 from ..cleanup import clear_topic_state
@@ -87,7 +89,15 @@ async def check_unbound_window_ttl(
         if canonical_window_id(w.window_id) in bound_lookup:
             continue
         view = window_query.view_window(w.window_id)
-        if view is None or view.origin != CCGRAM_CREATED_WINDOW_ORIGIN:
+        if (
+            view is None
+            or topic_pause.has_paused_target(w.window_id)
+            or view.origin != CCGRAM_CREATED_WINDOW_ORIGIN
+            or (
+                config.topic_discovery_mode == "marked"
+                and lifecycle_state.is_topic_detached(w.window_id)
+            )
+        ):
             terminal_poll_state.clear_unbound_timer(w.window_id)
             continue
         ws = terminal_poll_state.get_state(w.window_id)
@@ -243,6 +253,8 @@ async def _unbind_deleted_topic(
     adapter: TelegramSessionAdapter,
 ) -> None:
     """Tear down a window whose Telegram topic no longer exists."""
+    if topic_pause.note_missing(user_id, chat_id, thread_id):
+        return
     w = await tmux_manager.find_window_by_id(wid)
     view = window_query.view_window(wid)
     killed = False
@@ -363,7 +375,19 @@ async def topic_closed_handler(
         else thread_router.get_window_for_thread(user.id, thread_id)
     )
     if window_id:
+        if topic_pause.note_closed(user.id, chat_id, thread_id):
+            return
         display = thread_router.get_display_name(window_id)
+        if config.topic_discovery_mode == "marked":
+            cleared = await detach_topic_target(
+                user.id,
+                thread_id,
+                window_id,
+                chat_id=chat_id,
+                retirement_reason="remote_closed",
+            )
+            if not cleared:
+                logger.warning("topic_close_native_clear_pending", window_id=window_id)
         cleanup_kwargs = {"window_id": window_id, "window_dead": False}
         if chat_id is not None:
             cleanup_kwargs["chat_id"] = chat_id
@@ -374,19 +398,20 @@ async def topic_closed_handler(
             context.user_data,
             **cleanup_kwargs,
         )
-        if isinstance(chat_id, int):
-            thread_router.unbind_thread(
-                user.id,
-                thread_id,
-                chat_id=chat_id,
-                retirement_reason="remote_closed",
-            )
-        else:
-            thread_router.unbind_thread(
-                user.id,
-                thread_id,
-                retirement_reason="remote_closed",
-            )
+        if config.topic_discovery_mode != "marked":
+            if isinstance(chat_id, int):
+                thread_router.unbind_thread(
+                    user.id,
+                    thread_id,
+                    chat_id=chat_id,
+                    retirement_reason="remote_closed",
+                )
+            else:
+                thread_router.unbind_thread(
+                    user.id,
+                    thread_id,
+                    retirement_reason="remote_closed",
+                )
         logger.info(
             "Topic closed: window %s unbound (kept alive for rebinding, user=%d, thread=%d)",
             display,

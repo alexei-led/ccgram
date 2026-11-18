@@ -6,6 +6,7 @@ from collections import deque
 from dataclasses import dataclass
 import time
 
+from .topic_pause import paused
 from ..session_protocol.models import ProtocolError
 
 _PENDING_INJECTION_TTL_S = 30.0
@@ -116,6 +117,8 @@ async def send_telegram_to_window(
     try:
         if await agent_origin_returned_to_shell(window_id):
             return False, _AGENT_EXITED_MESSAGE
+        if paused(user_id, thread_id, chat_id):
+            return False, "Topic paused; mark the terminal session to resume."
         injection = (
             remember_telegram_injection(user_id, window_id, thread_id, text, chat_id)
             if thread_id is not None
@@ -150,6 +153,8 @@ async def send_telegram_followup_to_window(
     try:
         if await agent_origin_returned_to_shell(window_id):
             return False, _AGENT_EXITED_MESSAGE
+        if paused(user_id, thread_id, chat_id):
+            return False, "Topic paused; mark the terminal session to resume."
         injection = (
             remember_telegram_injection(user_id, window_id, thread_id, text, chat_id)
             if thread_id is not None

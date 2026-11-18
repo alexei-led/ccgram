@@ -119,6 +119,7 @@ class TestDirectChoiceKeyboard:
                     "AskUserQuestion",
                     "Pick one:\n  1. Alpha\n  2. Beta\n  Enter to select",
                     False,
+                    None,
                 ),
             ),
             patch(
@@ -301,6 +302,7 @@ class TestDirectChoiceCallbacks:
         _interactive_msgs[(10, -100, 42)] = 99
         _interactive_contexts[(10, -100, 42)] = (-100, 99)
         _interactive_sequences[(10, -100, 42)] = 7
+        _interactive_prompt_fingerprints[(10, -100, 42)] = "captured-prompt"
         query, update = _callback_update(chat_id=-100, thread_id=42, message_id=99)
 
         adapter = MagicMock(send_text=AsyncMock(return_value=(False, "busy")))

@@ -8,9 +8,10 @@ Returns None gracefully when LLM is not configured or on any failure.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from pathlib import Path
+
+from ccgram.session_protocol.messages import parse_records, read_entries
 
 logger = logging.getLogger(__name__)
 
@@ -88,12 +89,15 @@ def _parse_entry(raw_line: str) -> tuple[str, list[dict]] | None:
     raw_line = raw_line.strip()
     if not raw_line:
         return None
-    try:
-        entry = json.loads(raw_line)
-    except json.JSONDecodeError:
+    records, _ = parse_records(
+        read_entries((raw_line + "\n").encode(), "claude"), "claude"
+    )
+    if not records:
         return None
-
+    entry = records[0][0].data
     entry_type = entry.get("type")
+    if not isinstance(entry_type, str):
+        return None
     message = entry.get("message", {})
     if not isinstance(message, dict):
         return None

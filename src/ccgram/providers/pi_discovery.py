@@ -55,6 +55,7 @@ _PI_TELEGRAM_BUILTINS: dict[str, str] = {
     "/session": "Show session file, ID, messages, tokens, and cost",
     "/settings": "Open Pi settings",
     "/share": "Upload as private GitHub gist with shareable HTML link",
+    "/thinking": "Select the thinking level",
     "/tree": "Navigate the session tree",
 }
 

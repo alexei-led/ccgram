@@ -26,6 +26,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
+import stat
+import shutil
+from collections import Counter
+from uuid import NAMESPACE_URL, uuid5
 import structlog
 import subprocess
 from collections.abc import AsyncGenerator, Sequence
@@ -35,7 +40,9 @@ import libtmux
 from libtmux.exc import LibTmuxException
 from libtmux.neo import fetch_objs
 
-from ..config import config
+from ..utils import TMUX_WINDOW_ID_FORMAT, tmux_session_name
+from ..topic_mark_types import TopicMarkWriteGuard, TopicMarkWriteWitness
+from . import native_process, topic_mark_transport
 from .base import (
     AgentStatus,
     CaptureResult,
@@ -88,6 +95,14 @@ _TmuxError = (
     subprocess.CalledProcessError,
 )
 
+_TOPIC_MARK_OPTION = "@ccgram_topic"
+_TOPIC_MARK_VERSION = "v1"
+_TOPIC_MARK_RE = re.compile(rf"{_TOPIC_MARK_VERSION}:([01]):([0-9a-f]{{32}})")
+_TOPIC_OWNER_RE = re.compile(r"tmux:[0-9a-f]{32}")
+_WINDOW_ID_RE = re.compile(r"@\d+")
+_MAIN_WINDOW_NAME = "__main__"
+_TOPIC_INVENTORY_BATCH_SIZE = 64
+
 # Static capability declaration for the tmux backend (design Task 2).
 _TMUX_CAPABILITIES = MultiplexerCapabilities(
     name="tmux",
@@ -122,9 +137,11 @@ class TmuxManager:
         """Initialize tmux manager.
 
         Args:
-            session_name: Name of the tmux session to use (default from config)
+            session_name: Session name, defaulting to TMUX_SESSION_NAME or ccgram.
         """
-        self.session_name = session_name or config.tmux_session_name
+        self.session_name = session_name or tmux_session_name()
+        self.main_window_name = _MAIN_WINDOW_NAME
+        self.own_window_id: str | None = None
         self._server: libtmux.Server | None = None
 
     @property
@@ -161,11 +178,140 @@ class TmuxManager:
         )
         # Rename the default window to the main window name
         if session.windows:
-            session.windows[0].rename_window(config.tmux_main_window_name)
+            session.windows[0].rename_window(self.main_window_name)
         return session
 
     @staticmethod
-    def _window_ref_for_reconciliation(window: libtmux.Window) -> TmuxWindow:
+    def _socket_incarnation(server: libtmux.Server) -> str | None:
+        """Resolve the actual endpoint; neither @ID nor server PID is lineage."""
+        try:
+            result = server.cmd("display-message", "-p", "#{socket_path}")
+            if result.returncode != 0 or result.stderr or len(result.stdout) != 1:
+                return None
+            endpoint = Path(result.stdout[0]).resolve()
+            info = endpoint.stat()
+            if not stat.S_ISSOCK(info.st_mode):
+                return None
+            binary = shutil.which(server.tmux_bin or "tmux")
+            if binary is None:
+                return None
+            identity = native_process.inspect_native_process(
+                str(endpoint), backend="tmux", binary=binary
+            )
+            return identity.scope if identity is not None else None
+        except (*_TmuxError, ValueError):
+            return None
+
+    @staticmethod
+    def _selection_from_options(
+        lines: list[str], window_id: str, incarnation: str
+    ) -> tuple[bool | None, str | None]:
+        for line in lines:
+            key, _, value = line.partition(" ")
+            if key == _TOPIC_MARK_OPTION:
+                match = _TOPIC_MARK_RE.fullmatch(value.strip())
+                return (match[1] == "1", f"tmux:{match[2]}") if match else (None, None)
+        witness = uuid5(NAMESPACE_URL, f"ccgram:tmux:{incarnation}:{window_id}")
+        return False, f"tmux:{witness.hex}"
+
+    def _read_topic_selections(
+        self, window_ids: list[str], incarnation: str
+    ) -> dict[str, tuple[bool | None, str | None]] | None:
+        selections: dict[str, tuple[bool | None, str | None]] = {}
+        for offset in range(0, len(window_ids), _TOPIC_INVENTORY_BATCH_SIZE):
+            targets = window_ids[offset : offset + _TOPIC_INVENTORY_BATCH_SIZE]
+            commands: list[str] = []
+            for window_id in targets:
+                if commands:
+                    commands.append(";")
+                commands.extend(
+                    [
+                        "display-message",
+                        "-p",
+                        "-t",
+                        window_id,
+                        TMUX_WINDOW_ID_FORMAT,
+                        ";",
+                        "show-options",
+                        "-w",
+                        "-t",
+                        window_id,
+                    ]
+                )
+            result = self.server.cmd(commands[0], *commands[1:])
+            if result.returncode != 0 or result.stderr:
+                return None
+            parsed = self._selections_from_frames(result.stdout, targets, incarnation)
+            if parsed is None:
+                return None
+            selections.update(parsed)
+        return selections
+
+    @staticmethod
+    def _selections_from_frames(
+        lines: list[str], targets: list[str], incarnation: str
+    ) -> dict[str, tuple[bool | None, str | None]] | None:
+        selections: dict[str, tuple[bool | None, str | None]] = {}
+        current: str | None = None
+        options: list[str] = []
+        for line in lines:
+            if _WINDOW_ID_RE.fullmatch(line):
+                if current is not None:
+                    selections[current] = TmuxManager._selection_from_options(
+                        options, current, incarnation
+                    )
+                if line not in targets or line in selections:
+                    return None
+                current, options = line, []
+            elif current is None:
+                return None
+            else:
+                options.append(line)
+        if current is not None:
+            selections[current] = TmuxManager._selection_from_options(
+                options, current, incarnation
+            )
+        return selections if set(selections) == set(targets) else None
+
+    def _topic_inventory(
+        self,
+    ) -> tuple[str, dict[str, tuple[bool | None, str | None]]] | None:
+        """Fresh global owner scan; duplicate owners in other sessions still matter."""
+        try:
+            incarnation = self._socket_incarnation(self.server)
+            if incarnation is None:
+                return None
+            result = self.server.cmd("list-windows", "-a", "-F", TMUX_WINDOW_ID_FORMAT)
+            if (
+                result.returncode != 0
+                or result.stderr
+                or any(not _WINDOW_ID_RE.fullmatch(wid) for wid in result.stdout)
+            ):
+                return None
+            selections = self._read_topic_selections(
+                list(dict.fromkeys(result.stdout)), incarnation
+            )
+            if (
+                selections is None
+                or self._socket_incarnation(self.server) != incarnation
+            ):
+                return None
+            owners = Counter(owner for _, owner in selections.values() if owner)
+            return incarnation, {
+                wid: (None, None) if owner and owners[owner] > 1 else (marked, owner)
+                for wid, (marked, owner) in selections.items()
+            }
+        except _TmuxError:
+            return None
+
+    @staticmethod
+    def _window_ref_for_reconciliation(
+        window: libtmux.Window,
+        *,
+        selection: tuple[bool | None, str | None] = (None, None),
+        main_window_name: str = _MAIN_WINDOW_NAME,
+        own_window_id: str | None = None,
+    ) -> TmuxWindow:
         """Build a window ref while treating pane metadata as optional.
 
         Every window in the session comes back, including the ones
@@ -179,8 +325,8 @@ class TmuxManager:
         name = window.window_name or ""
         window_id = window.window_id or ""
         adoptable = not (
-            name == config.tmux_main_window_name
-            or (config.own_window_id and window_id == config.own_window_id)
+            name == main_window_name
+            or (own_window_id and window_id == own_window_id)
             or name.startswith("_")
         )
 
@@ -209,6 +355,8 @@ class TmuxManager:
             pane_width=pw,
             pane_height=ph,
             topic_eligible=bool(adoptable),
+            topic_marked=selection[0],
+            topic_mark_owner=selection[1],
         )
 
     async def list_windows(self) -> list[TmuxWindow]:
@@ -221,14 +369,16 @@ class TmuxManager:
             if not session:
                 return windows
 
+            inventory = self._topic_inventory()
+            selections = inventory[1] if inventory is not None else {}
             for window in session.windows:
                 name = window.window_name or ""
                 window_id = window.window_id or ""
                 # Skip the main window (placeholder window)
-                if name == config.tmux_main_window_name:
+                if name == self.main_window_name:
                     continue
                 # Skip our own window (auto-detect mode)
-                if config.own_window_id and window_id == config.own_window_id:
+                if self.own_window_id and window_id == self.own_window_id:
                     continue
                 # Skip hidden windows (name starts with underscore)
                 if name.startswith("_"):
@@ -259,6 +409,8 @@ class TmuxManager:
                             pane_tty=pane_tty,
                             pane_width=pw,
                             pane_height=ph,
+                            topic_marked=selections.get(window_id, (None, None))[0],
+                            topic_mark_owner=selections.get(window_id, (None, None))[1],
                         )
                     )
                 except _TmuxError as e:
@@ -296,8 +448,15 @@ class TmuxManager:
                 session = self._fetch_session()
                 if session is None:
                     return []
+                inventory = self._topic_inventory()
+                selections = inventory[1] if inventory is not None else {}
                 windows = [
-                    self._window_ref_for_reconciliation(window)
+                    self._window_ref_for_reconciliation(
+                        window,
+                        selection=selections.get(window.window_id or "", (None, None)),
+                        main_window_name=self.main_window_name,
+                        own_window_id=self.own_window_id,
+                    )
                     for window in session.windows
                 ]
             except _TmuxError:
@@ -306,6 +465,192 @@ class TmuxManager:
             return windows
 
         return await asyncio.to_thread(_sync_list_windows)
+
+    async def set_topic_mark(
+        self,
+        window_id: str,
+        marked: bool,
+        *,
+        owner: str | None = None,
+        write_guard: TopicMarkWriteGuard | None = None,
+    ) -> bool:
+        """Update only a unique owner through a pinned, bounded native client."""
+        if not _WINDOW_ID_RE.fullmatch(window_id) or (
+            owner is not None and not _TOPIC_OWNER_RE.fullmatch(owner)
+        ):
+            return False
+        snapshot = await self._marker_inventory()
+        if snapshot is None:
+            return False
+        incarnation, selections = snapshot
+        if any(actual_owner is None for _, actual_owner in selections.values()):
+            return False
+        expected = owner or selections.get(window_id, (None, None))[1]
+        if expected is None:
+            return False
+        matches = [wid for wid, (_, actual) in selections.items() if actual == expected]
+        if not matches:
+            return owner is not None and not marked
+        if len(matches) != 1:
+            return False
+        target = matches[0]
+        if selections[target][0] is marked:
+            return True
+        return write_guard is not None and await self._write_topic_mark(
+            target, marked, expected, incarnation, write_guard
+        )
+
+    async def _marker_socket_path(self) -> tuple[str, str] | None:
+        binary = shutil.which(self.server.tmux_bin or "tmux")
+        if binary is None:
+            return None
+        args = ["-N"]
+        if self.server.socket_path:
+            args += ["-S", self.server.socket_path]
+        elif self.server.socket_name:
+            args += ["-L", self.server.socket_name]
+        result = await topic_mark_transport.run_marker_cli(
+            binary, [*args, "display-message", "-p", "#{socket_path}"]
+        )
+        if result is None or result[0] or result[2].strip():
+            return None
+        paths = result[1].splitlines()
+        return (binary, paths[0]) if len(paths) == 1 and paths[0] else None
+
+    async def _inventory_on_pin(
+        self, binary: str, witness: TopicMarkWriteWitness
+    ) -> tuple[str, dict[str, tuple[bool | None, str | None]]] | None:
+        if witness.pin_path is None:
+            return None
+        args = ["-N", "-S", witness.pin_path]
+        pid = await topic_mark_transport.run_marker_cli(
+            binary, [*args, "display-message", "-p", "#{pid}"]
+        )
+        if (
+            pid is None
+            or pid[0]
+            or pid[2].strip()
+            or pid[1].strip() != str(witness.native_pid)
+        ):
+            return None
+        result = await topic_mark_transport.run_marker_cli(
+            binary, [*args, "list-windows", "-a", "-F", TMUX_WINDOW_ID_FORMAT]
+        )
+        if result is None or result[0] or result[2].strip():
+            return None
+        windows = result[1].splitlines()
+        if any(not _WINDOW_ID_RE.fullmatch(window) for window in windows):
+            return None
+        scope = topic_mark_transport.process_scope(witness)
+        selections: dict[str, tuple[bool | None, str | None]] = {}
+        for window in dict.fromkeys(windows):
+            options = await topic_mark_transport.run_marker_cli(
+                binary, [*args, "show-options", "-w", "-t", window]
+            )
+            if options is None or options[0] or options[2].strip():
+                return None
+            selections[window] = self._selection_from_options(
+                options[1].splitlines(), window, scope
+            )
+        owners = Counter(owner for _, owner in selections.values() if owner)
+        return scope, {
+            window: (None, None) if owner and owners[owner] > 1 else (marked, owner)
+            for window, (marked, owner) in selections.items()
+        }
+
+    async def _marker_inventory(
+        self,
+    ) -> tuple[str, dict[str, tuple[bool | None, str | None]]] | None:
+        endpoint = await self._marker_socket_path()
+        if endpoint is None:
+            return None
+        binary, path = endpoint
+        witness = topic_mark_transport.prepare_cli_write(
+            backend="tmux", binary=binary, socket_path=path
+        )
+        if witness is None:
+            return None
+        try:
+            snapshot = await self._inventory_on_pin(binary, witness)
+        finally:
+            cleaned = topic_mark_transport.cleanup_pin(witness)
+        return snapshot if cleaned else None
+
+    async def _write_topic_mark(
+        self,
+        target: str,
+        marked: bool,
+        expected: str,
+        incarnation: str,
+        write_guard: TopicMarkWriteGuard,
+    ) -> bool:
+        endpoint = await self._marker_socket_path()
+        if endpoint is None:
+            return False
+        binary, path = endpoint
+        witness = topic_mark_transport.prepare_cli_write(
+            backend="tmux", binary=binary, socket_path=path
+        )
+        if witness is None or witness.pin_path is None:
+            return False
+        if topic_mark_transport.process_scope(witness) != incarnation:
+            topic_mark_transport.cleanup_pin(witness)
+            return False
+        token = f"{_TOPIC_MARK_VERSION}:{int(marked)}:{expected.removeprefix('tmux:')}"
+        completion = f"ccgram-mark:{witness.dispatch_id}:{witness.native_pid}"
+        result = await topic_mark_transport.guarded_cli_write(
+            witness,
+            write_guard,
+            binary,
+            [
+                "-N",
+                "-S",
+                witness.pin_path,
+                "set-option",
+                "-w",
+                "-t",
+                target,
+                _TOPIC_MARK_OPTION,
+                token,
+                ";",
+                "display-message",
+                "-p",
+                f"ccgram-mark:{witness.dispatch_id}:#{{pid}}",
+            ],
+            success=lambda result: (
+                result[0] == 0
+                and not result[2].strip()
+                and result[1].strip() == completion
+            ),
+        )
+        if result is None:
+            return False
+        confirmed = await self._marker_inventory()
+        return (
+            confirmed is not None
+            and confirmed[0] == incarnation
+            and all(
+                actual_owner is not None for _, actual_owner in confirmed[1].values()
+            )
+            and sum(
+                selection == (marked, expected) for selection in confirmed[1].values()
+            )
+            == 1
+        )
+
+    async def topic_mark_endpoint_scope(self) -> str | None:
+        endpoint = await self._marker_socket_path()
+        if endpoint is None:
+            return None
+        binary, path = endpoint
+        return native_process.inspect_endpoint_scope(
+            path, backend="tmux", binary=binary
+        )
+
+    async def recover_topic_mark_write(
+        self, witness: TopicMarkWriteWitness
+    ) -> bool | None:
+        return topic_mark_transport.recover_write(witness, backend="tmux")
 
     async def find_window_by_name(self, window_name: str) -> TmuxWindow | None:
         """Find a window by its name.
@@ -586,6 +931,16 @@ class TmuxManager:
 
         return await asyncio.to_thread(_sync_capture)
 
+    @staticmethod
+    def _send_pane_input(
+        pane: libtmux.Pane, text: str, *, enter: bool, literal: bool
+    ) -> None:
+        # tmux needs extended-key configuration to encode Shift+Enter itself.
+        # CLI editors accept CSI-u directly; don't change the user's server.
+        if not literal and text == "S-Enter":
+            text, literal = "\x1b[13;2u", True
+        pane.send_keys(text, enter=enter, literal=literal)
+
     def _pane_send(
         self,
         window_id: str,
@@ -613,7 +968,7 @@ class TmuxManager:
             if not pane:
                 logger.debug("No active pane in window %s", window_id)
                 return False
-            pane.send_keys(chars, enter=enter, literal=literal)
+            self._send_pane_input(pane, chars, enter=enter, literal=literal)
             return True
         except _TmuxError:
             logger.exception("Failed to send keys to window %s", window_id)
@@ -930,7 +1285,7 @@ class TmuxManager:
                 if not pane:
                     logger.debug("Pane %s not found", pane_id)
                     return False
-                pane.send_keys(text, enter=enter, literal=literal)
+                self._send_pane_input(pane, text, enter=enter, literal=literal)
                 return True
             except _TmuxError:
                 logger.exception("Failed to send keys to pane %s", pane_id)
@@ -1254,6 +1609,7 @@ class TmuxManager:
         try:
             proc = await asyncio.create_subprocess_exec(
                 "ps",
+                "-ww",
                 "-t",
                 tty_path,
                 "-o",

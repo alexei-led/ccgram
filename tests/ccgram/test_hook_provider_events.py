@@ -904,3 +904,29 @@ def test_gemini_install_adds_provider_specific_hooks(
             if "--provider gemini" in hook["command"]
         ]
         assert len(matches) == 1
+
+
+def test_pi_custom_agent_directory_resolves_exact_session(tmp_path, monkeypatch):
+    from ccgram.hook import _resolve_pi_transcript_path
+    from ccgram.providers.pi import PiProvider, encode_cwd_dirname
+
+    agent_dir = tmp_path / "custom-agent"
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
+    cwd = str(tmp_path / "project")
+    session_id = "550e8400-e29b-41d4-a716-446655440000"
+    session_dir = agent_dir / "sessions" / encode_cwd_dirname(cwd)
+    session_dir.mkdir(parents=True)
+    transcript = session_dir / f"2026-10-24_{session_id}.jsonl"
+    transcript.write_text(
+        json.dumps({"type": "session", "id": session_id, "cwd": cwd, "version": 3})
+        + "\n"
+    )
+
+    assert _resolve_pi_transcript_path(session_id, cwd) == str(transcript)
+    event = PiProvider().discover_transcript(cwd, "pi")
+    assert event is not None
+    assert event.session_id == session_id
+    assert event.transcript_path == str(transcript)
+    assert (
+        _resolve_pi_transcript_path("00000000-0000-0000-0000-000000000000", cwd) == ""
+    )

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telegram.error import RetryAfter, TelegramError
 
 from ccgram.handlers.commands import forward_command_handler
 
@@ -205,6 +206,31 @@ class TestForwardCommandResolution:
         reply_text = update.message.reply_text.call_args[0][0]
         assert reply_text == "⏭️ [project] Follow-up queued."
 
+    async def test_typing_failure_still_forwards_the_command(self) -> None:
+        update = _make_update(text="/compact")
+        update.message.get_bot.return_value.send_chat_action.side_effect = (
+            TelegramError("timed out")
+        )
+
+        await forward_command_handler(update, _make_context())
+
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/compact", -100999, adapter=self.mock_adapter
+        )
+
+    async def test_typing_failure_still_queues_pi_followup(self) -> None:
+        self.mock_provider.capabilities.name = "pi"
+        update = _make_update(text="/followup run tests")
+        update.message.get_bot.return_value.send_chat_action.side_effect = (
+            TelegramError("timed out")
+        )
+
+        await forward_command_handler(update, _make_context())
+
+        self.mock_send_followup_to_window.assert_called_once_with(
+            100, "@1", 42, "run tests", -100999, adapter=self.mock_adapter
+        )
+
     async def test_pi_followup_requires_message(self) -> None:
         self.mock_provider.capabilities.name = "pi"
         update = _make_update(text="/followup")
@@ -278,6 +304,32 @@ class TestForwardCommandResolution:
         await forward_command_handler(update, _make_context())
 
         self.mock_ws.clear_window_session.assert_called_once_with("@1")
+
+    async def test_clear_still_resets_session_when_confirmation_reply_fails(
+        self,
+    ) -> None:
+        update = _make_update(text="/clear")
+
+        with patch(f"{_FW}.safe_reply", AsyncMock(side_effect=RetryAfter(1))):
+            await forward_command_handler(update, _make_context())
+
+        self.mock_send_to_window.assert_called_once()
+        self.mock_ws.clear_window_session.assert_called_once_with("@1")
+
+    async def test_post_send_probes_still_run_when_confirmation_reply_fails(
+        self,
+    ) -> None:
+        update = _make_update(text="/compact")
+
+        with (
+            patch(f"{_FW}.safe_reply", AsyncMock(side_effect=RetryAfter(1))),
+            patch(
+                f"{_FW}._send_forward_post_probes", new_callable=AsyncMock
+            ) as post_probes,
+        ):
+            await forward_command_handler(update, _make_context())
+
+        post_probes.assert_awaited_once()
 
     async def test_clear_enqueues_status_clear_and_resets_idle(self) -> None:
         from ccgram.handlers.polling.polling_state import terminal_poll_state
@@ -578,7 +630,7 @@ class TestForwardWithRealProvider:
             ("gemini", "model"),
             ("pi", "model"),
             ("claude", "effort"),
-            ("codex", "personality"),
+            ("codex", "config"),
             ("gemini", "auth"),
             ("pi", "login"),
         ],

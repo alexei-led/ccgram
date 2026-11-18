@@ -71,6 +71,7 @@ if TYPE_CHECKING:
 
     from .providers.base import HookEvent
     from .session_protocol.runtime import ProtocolRuntime
+    from .topic_mark_ipc import TopicMarkServer
 
 logger = structlog.get_logger()
 
@@ -78,6 +79,7 @@ session_monitor: SessionMonitor | None = None
 _status_poll_task: asyncio.Task[None] | None = None
 _callbacks_wired = False
 _protocol_runtime: ProtocolRuntime | None = None
+_topic_mark_server: TopicMarkServer | None = None
 
 
 def install_global_exception_handler() -> None:
@@ -125,7 +127,7 @@ def verify_hooks_installed() -> None:
     provider_name = provider.capabilities.name
     if provider_name != "claude":
         if provider.capabilities.hook_install_managed_by_ccgram:
-            # DEBUG (not INFO/WARNING): Codex/Gemini fall back to transcript-scan
+            # DEBUG (not INFO/WARNING): Codex/Gemini/Pi fall back to transcript
             # discovery when hooks are absent, so this is an opt-in latency tip,
             # not a degraded state — it should not greet every startup at INFO.
             logger.debug(
@@ -351,8 +353,7 @@ def start_event_stream(application: Application) -> object | None:
     """
     if not multiplexer.capabilities.supports_event_stream:
         return None
-    # Lazy: keep the event-stream consumer (and its handler graph) out of the
-    # cold-import path; only event-stream backends ever load it.
+    # Lazy: only event-stream backends need the stream supervisor.
     from .event_stream_monitor import EventStreamMonitor, set_active_event_stream
 
     # Lazy: thread_router proxy, used only to seed the bound-window set.
@@ -361,7 +362,13 @@ def start_event_stream(application: Application) -> object | None:
     def _bound_window_ids() -> set[str]:
         return {wid for _u, _t, wid in thread_router.iter_thread_bindings()}
 
-    monitor = EventStreamMonitor(PTBTelegramClient(application.bot), _bound_window_ids)
+    # Lazy: the Telegram adapter owns recipient routing and destructive topic policy.
+    from .handlers.polling.window_death import handle_window_death
+
+    async def on_window_died(window_id: str) -> None:
+        await handle_window_death(application.bot, window_id)
+
+    monitor = EventStreamMonitor(_bound_window_ids, on_window_died=on_window_died)
     monitor.start()
     set_active_event_stream(monitor)
     logger.info("Event-stream consumer started")
@@ -370,7 +377,7 @@ def start_event_stream(application: Application) -> object | None:
 
 async def bootstrap_application(application: Application) -> None:
     """Run the full post_init sequence in the prescribed order."""
-    global _protocol_runtime
+    global _protocol_runtime, _topic_mark_server
 
     install_global_exception_handler()
     wire_multiplexer()
@@ -429,6 +436,25 @@ async def bootstrap_application(application: Application) -> None:
         _protocol_runtime = None
         raise
 
+    # Lazy: private marker IPC is independent of mobile API credentials.
+    from .topic_mark_ipc import start_topic_mark_server
+
+    # Lazy: keep writer authority setup on the daemon-only startup path.
+    from .state_writer_lock import STATE_WRITER_LEASE_KEY, StateWriterLease
+
+    # Lazy: installed state must follow daemon lifecycle initialization.
+    from .window_state_store import get_window_store
+
+    lease = application.bot_data.get(STATE_WRITER_LEASE_KEY)
+    if (
+        not isinstance(lease, StateWriterLease)
+        or lease.state_path != config.state_file.resolve()
+    ):
+        raise RuntimeError("Daemon startup requires its exact state writer lease")
+    _topic_mark_server = await start_topic_mark_server(
+        lease, multiplexer, get_window_store(), session_manager.flush_state
+    )
+
     await start_session_monitor(application, event_hub=_protocol_runtime.service.hub)
     start_status_polling(application)
     start_event_stream(application)
@@ -449,7 +475,11 @@ async def stop_delivery_runtime() -> None:
     can actually deliver parsed-but-unsent messages (TASK-5/6). Must run
     before any consumer that could enqueue new work is gone.
     """
-    global _status_poll_task, session_monitor
+    global _status_poll_task, session_monitor, _topic_mark_server
+
+    if _topic_mark_server is not None:
+        await _topic_mark_server.close()
+        _topic_mark_server = None
 
     if _status_poll_task is not None:
         _status_poll_task.cancel()
@@ -488,7 +518,11 @@ async def stop_delivery_runtime() -> None:
 
 async def shutdown_runtime() -> None:
     """Phase 2 (post_shutdown): teardown that needs no HTTP transport."""
-    global _protocol_runtime
+    global _protocol_runtime, _topic_mark_server
+
+    if _topic_mark_server is not None:
+        await _topic_mark_server.close()
+        _topic_mark_server = None
 
     if _protocol_runtime is not None:
         await _protocol_runtime.close()
@@ -511,7 +545,12 @@ def reset_for_testing() -> None:
     loud on double registration, and bootstrap caches its own
     ``_callbacks_wired`` flag too.
     """
-    global _callbacks_wired, session_monitor, _status_poll_task, _protocol_runtime
+    global \
+        _callbacks_wired, \
+        session_monitor, \
+        _status_poll_task, \
+        _protocol_runtime, \
+        _topic_mark_server
 
     # Lazy: each module's _reset_*_for_testing hook is only needed by the
     # test harness; production callers never reach reset_for_testing().
@@ -539,6 +578,7 @@ def reset_for_testing() -> None:
     _status_poll_task = None
     session_resolver.bind_session_service(None)
     _protocol_runtime = None
+    _topic_mark_server = None
     clear_active_monitor()
 
     # Stop any event-stream consumer this run started and clear its caches so the

@@ -15,9 +15,28 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .topic_discovery import (
+    DEFAULT_TOPIC_DISCOVERY_MODE,
+    TOPIC_DISCOVERY_ENV,
+    parse_topic_discovery_mode,
+)
 from .utils import ccgram_dir
 
 logger = structlog.get_logger()
+
+# Providers offered by default. Gemini is deliberately absent: keep it only
+# by listing it in CCGRAM_PROVIDERS_ENABLED.
+# Undelivered transcript (KiB) a restart may replay per session before the
+# remainder is treated as history. See _startup_replay_max_bytes.
+DEFAULT_STARTUP_REPLAY_MAX_KB = 256
+
+DEFAULT_ENABLED_PROVIDERS: tuple[str, ...] = (
+    "antigravity",
+    "claude",
+    "codex",
+    "pi",
+    "shell",
+)
 
 
 def _parse_int_env(name: str, default: int) -> int:
@@ -74,6 +93,90 @@ def _delivery_watch_gap_bytes() -> int:
     except OverflowError, ValueError:
         # Finite but too large for an int; treat like any other bad value.
         return 256 * 1024
+
+
+def _flag_env(name: str, default: bool) -> bool:
+    """Parse an on/off env var, keeping *default* for unset or unrecognized values."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+def _choice_env(name: str, allowed: tuple[str, ...], default: str) -> str:
+    """Parse a closed-set env var, falling back to *default* when invalid."""
+    raw = (os.getenv(name) or "").strip().lower()
+    return raw if raw in allowed else default
+
+
+def _projects_roots_env() -> list[Path]:
+    """Project roots for typed session start: CCGRAM_PROJECTS_ROOTS.
+
+    os.pathsep-separated paths, each expanded. Unset defaults to
+    ~/Workspace when it exists, else ~. A configured entry that does not
+    exist is dropped, and when every configured entry is missing the result
+    is empty: the typed flow then falls back to the directory browser instead
+    of searching home behind the operator's back.
+    """
+    raw = (os.getenv("CCGRAM_PROJECTS_ROOTS") or "").strip()
+    if raw:
+        candidates = [p for p in raw.split(os.pathsep) if p.strip()]
+    else:
+        workspace = Path.home() / "Workspace"
+        candidates = [str(workspace if workspace.is_dir() else Path.home())]
+    roots: list[Path] = []
+    for entry in candidates:
+        try:
+            path = Path(entry).expanduser()
+            if path.is_dir():
+                roots.append(path.resolve())
+        except OSError:
+            continue
+    if not roots and raw:
+        logger.warning(
+            "CCGRAM_PROJECTS_ROOTS names no existing directory; project search "
+            "is empty and the typed flow falls back to the directory browser"
+        )
+    return roots
+
+
+def _startup_replay_max_bytes() -> int:
+    """Undelivered transcript a restart may replay: CCGRAM_STARTUP_REPLAY_MAX_KB.
+
+    A wedged or flood-limited queue leaves the delivered watermark far behind
+    the transcript, so an unbounded replay re-sends thousands of messages on
+    every restart and trips Telegram flood control. 0 disables the bound and
+    restores replay-everything.
+    """
+    raw = (os.getenv("CCGRAM_STARTUP_REPLAY_MAX_KB") or "").strip()
+    if not raw:
+        return DEFAULT_STARTUP_REPLAY_MAX_KB * 1024
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_STARTUP_REPLAY_MAX_KB * 1024
+    if not math.isfinite(value) or value <= 0:
+        return 0
+    return int(value * 1024)
+
+
+def _enabled_providers_env() -> tuple[str, ...]:
+    """Providers offered in pickers: CCGRAM_PROVIDERS_ENABLED.
+
+    The default list keeps Gemini out of the UI; its provider code stays
+    available to explicitly configured windows and resumes. An unset value
+    means DEFAULT_ENABLED_PROVIDERS; to offer every registered provider, list
+    them all explicitly.
+    """
+    raw = (os.getenv("CCGRAM_PROVIDERS_ENABLED") or "").strip()
+    if not raw:
+        return DEFAULT_ENABLED_PROVIDERS
+    return tuple(name.strip().lower() for name in raw.split(",") if name.strip())
 
 
 def _whisper_timeout_s() -> float:
@@ -163,6 +266,33 @@ class Config:
 
         # Provider selection
         self.provider_name: str = os.getenv("CCGRAM_PROVIDER", "claude")
+
+        # Typed new-topic flow:
+        #   <agent>[:<mode>] <project|path> [@branch] <instruction>
+        # Each knob replaces a picker step. Defaults are the fewest-steps
+        # path: YOLO start, current branch, auto-resolved workspace, no
+        # bind-existing picker, first-run trust prompts answered for you.
+        self.default_mode: str = _choice_env(
+            "CCGRAM_DEFAULT_MODE", ("yolo", "normal"), "yolo"
+        )
+        self.projects_roots: list[Path] = _projects_roots_env()
+        # Opt-in worktrees: a typed @branch still works when this is off.
+        self.new_topic_worktrees: bool = _flag_env("CCGRAM_NEW_TOPIC_WORKTREES", False)
+        self.workspace_picker: bool = _flag_env("CCGRAM_WORKSPACE_PICKER", False)
+        self.bind_picker: bool = _flag_env("CCGRAM_BIND_PICKER", False)
+        self.autostart_trust: bool = _flag_env("CCGRAM_AUTOSTART_TRUST", True)
+        # Directory browser listing: git repositories + MRU only.
+        self.dir_browser_all_dirs: bool = _flag_env(
+            "CCGRAM_DIR_BROWSER_ALL_DIRS", False
+        )
+        self.enabled_providers: tuple[str, ...] = _enabled_providers_env()
+        self.startup_replay_max_bytes: int = _startup_replay_max_bytes()
+
+        # Controls automatic admission and explicit-selection verification.
+        # Existing bindings remain connected.
+        self.topic_discovery_mode: str = parse_topic_discovery_mode(
+            os.getenv(TOPIC_DISCOVERY_ENV, DEFAULT_TOPIC_DISCOVERY_MODE)
+        )
 
         self._init_multiplexer()
 

@@ -160,8 +160,13 @@ class PiHookAdapter:
         "PreCompact",
         "PostCompact",
     )
-    # Pi hooks are installed by cc-thingz hook-runner, not ccgram.
-    installable_events: tuple[str, ...] = ()
+    # Lifecycle and wait-state signals are sufficient for session tracking.
+    installable_events: tuple[str, ...] = (
+        "SessionStart",
+        "Stop",
+        "SessionEnd",
+        "Notification",
+    )
 
     def normalize(self, payload: dict[str, object]) -> NormalizedHookEvent | None:
         event_name = _str_field(payload, "hook_event_name")

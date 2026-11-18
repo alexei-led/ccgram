@@ -1,0 +1,45 @@
+
+[Extensions]
+  @alexeiled/pi-fusion@latest:src, @alexeiled/pi-model-router, @alexeiled/pi-plan-exec:src,
+@alexeiled/pi-provider-compat:src, @alexeiled/pi-subagents-bridge:src, @benvargas/pi-openai-fast,
+@ian-pascoe/pi-lsp:src, @marckrenn/pi-sub-bar, @marckrenn/pi-sub-bar:../pi-sub-core,
+@narumitw/pi-btw:dist, @nicknisi/pi-ast-grep, @pi-stef/atlassian:atlassian.ts,
+@tintinweb/pi-tasks:src, agterm-status.ts,
+alexei-led/cc-thingz:dist/pi/extensions/agentbundler-hooks.ts,
+alexei-led/cc-thingz:dist/pi/extensions/ask-user-question.ts,
+alexei-led/cc-thingz:dist/pi/extensions/hook-runner,
+alexei-led/cc-thingz:dist/pi/extensions/permission-gate.ts,
+alexei-led/cc-thingz:dist/pi/extensions/plan-mode, classifier-catalog, herdr-agent-state.ts,
+pi-gitnexus:src, pi-intercom, pi-powerline-footer, pi-sub-aliases:src, pi-subagents:bundle,
+pi-web-access:dist, resume-from:shims/pi/extensions/resume-from.js,
+umputun/revdiff:plugins/pi/extensions/revdiff.ts
+
+
+ Router initialized with profiles: claude-personal, claude-work, openai-personal, openai-work
+
+  Router openai-personal  think:high   fix-pi-interactive-commands
+Router / openai-personal · last
+Local eligible baseline · openai-personal · balanced (default)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Scope: all | scoped
+tab scope (all/scoped)
+
+>
+
+    claude-sonnet-5-5 [anthropic-work]
+    gpt-6.1-sol [openai-codex-work]
+    gpt-6-astra [openai-codex-personal]
+    gpt-6-sol [openai-codex-personal]
+    gpt-6-luna [openai-codex-personal]
+→ ✓ openai-personal [router]
+    claude-personal [router] · default
+    claude-haiku-4-5 [anthropic-personal]
+    claude-opus-5-5 [anthropic-personal]
+    deepseek-flash [deepseek]
+  (13/20)
+Could not refresh anthropic; showing cached models.
+
+  Enter to select · Ctrl+S to set as default · Escape/Ctrl+C to cancel
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  fix/pi-interactive-commands   0/872k (0.0%) 󰁨

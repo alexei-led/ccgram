@@ -8,7 +8,6 @@ permanently unknown: replay must never turn a crash into a second key sequence.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import os
@@ -37,6 +36,23 @@ def new_id(prefix: str) -> str:
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptCursor:
+    """Identity of the transcript bytes last observed for one source.
+
+    `marker` digests the last 4 KiB before `observed`. A row written before this
+    shape stored a digest of the whole content, so its first check fails and bumps
+    the generation once when the file is at least 4 KiB. A smaller file's whole
+    content is its tail, so that legacy digest still matches and the generation
+    is kept.
+    """
+
+    inode: int
+    observed: int
+    marker: str
+    generation: int
 
 
 class ProtocolStore:
@@ -290,23 +306,33 @@ class ProtocolStore:
             )
         return row[0], True
 
-    async def transcript_generation(self, key: str, path: Path) -> int:
-        return (await self.transcript_snapshot(key, path)).generation
-
-    async def transcript_snapshot(self, key: str, path: Path) -> TranscriptSnapshot:
+    def transcript_cursor(self, key: str) -> TranscriptCursor | None:
         row = self.db.execute(
-            "SELECT inode, size, prefix_size, prefix_hash, generation FROM transcripts WHERE key=?",
+            "SELECT inode, prefix_size, prefix_hash, generation FROM transcripts WHERE key=?",
             (key,),
         ).fetchone()
-        snapshot = await asyncio.to_thread(_transcript_record, path, row)
-        record = snapshot.record
-        if row != record:
-            with self.db:
-                self.db.execute(
-                    "INSERT OR REPLACE INTO transcripts VALUES (?, ?, ?, ?, ?, ?)",
-                    (key, *record),
-                )
-        return snapshot
+        return None if row is None else TranscriptCursor(*row)
+
+    def save_transcript_cursor(self, key: str, cursor: TranscriptCursor) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO transcripts VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    key,
+                    cursor.inode,
+                    cursor.observed,
+                    cursor.observed,
+                    cursor.marker,
+                    cursor.generation,
+                ),
+            )
+
+    def has_transcript_observation(self, key: str) -> bool:
+        """Whether this source has ever had a persisted filesystem observation."""
+        return (
+            self.db.execute("SELECT 1 FROM transcripts WHERE key=?", (key,)).fetchone()
+            is not None
+        )
 
     def retarget(self, previous: str, current: str) -> None:
         """Apply a recovery mapping already attested by the existing resolver."""
@@ -319,52 +345,3 @@ class ProtocolStore:
                     "UPDATE sessions SET target=? WHERE target=?",
                     (current.casefold(), previous.casefold()),
                 )
-
-
-@dataclass(frozen=True, slots=True)
-class TranscriptSnapshot:
-    content: bytes
-    stamp: tuple[int, int, int, int]
-    record: tuple[int, int, int, str, int]
-
-    @property
-    def generation(self) -> int:
-        return self.record[4]
-
-
-def _source_stamp(stat: os.stat_result) -> tuple[int, int, int, int]:
-    return stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
-
-
-def _transcript_record(
-    path: Path, row: tuple[int, int, int, str, int] | None
-) -> TranscriptSnapshot:
-    for _ in range(3):
-        with path.open("rb") as source:
-            before = os.fstat(source.fileno())
-            content = source.read()
-            after = os.fstat(source.fileno())
-        current = path.stat()
-        if (
-            _source_stamp(before) != _source_stamp(after)
-            or _source_stamp(after) != _source_stamp(current)
-            or before.st_dev != current.st_dev
-            or len(content) != current.st_size
-        ):
-            continue
-        generation = row[4] if row else 0
-        if row and (
-            row[0] != current.st_ino
-            or len(content) < row[1]
-            or hashlib.sha256(content[: row[2]]).hexdigest() != row[3]
-        ):
-            generation += 1
-        record = (
-            current.st_ino,
-            len(content),
-            len(content),
-            hashlib.sha256(content).hexdigest(),
-            generation,
-        )
-        return TranscriptSnapshot(content, _source_stamp(current), record)
-    raise OSError("Transcript changed repeatedly while reading")

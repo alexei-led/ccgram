@@ -1,0 +1,541 @@
+"""Real native marks on a private tmux socket, never the user's server."""
+
+from pathlib import Path
+from contextlib import closing
+import os
+import select
+import sys
+import shutil
+
+import libtmux
+import pytest
+
+from ccgram.multiplexer.tmux import TmuxManager
+from ccgram.multiplexer import topic_mark_transport
+from _native_cleanup import tmux_test_namespace
+from _topic_mark_helpers import RecordingTopicMarkGuard
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed"),
+]
+
+
+@pytest.fixture
+def isolated_tmux(tmp_path: Path, monkeypatch):
+    root, close_namespace = tmux_test_namespace()
+    for name in ("home", "config", "cache", "runtime", "data", "ccgram"):
+        (root / name).mkdir(mode=0o700)
+    for key in tuple(os.environ):
+        if key.startswith(("AGTERM_", "HERDR_", "TMUX")):
+            monkeypatch.delenv(key)
+    for key, name in (
+        ("HOME", "home"),
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_RUNTIME_DIR", "runtime"),
+        ("XDG_DATA_HOME", "data"),
+        ("CCGRAM_DIR", "ccgram"),
+    ):
+        monkeypatch.setenv(key, str(root / name))
+    monkeypatch.setenv("TMUX_TMPDIR", str(root))
+    monkeypatch.setattr(topic_mark_transport.tempfile, "gettempdir", lambda: str(root))
+    namespace = root / f"tmux-{os.getuid()}"
+    namespace.mkdir(mode=0o700)
+    server = libtmux.Server(
+        socket_path=str(namespace / "native"), config_file="/dev/null"
+    )
+    try:
+        session = server.new_session(
+            session_name="marks",
+            start_directory=str(tmp_path),
+            window_command="/bin/sleep 600",
+        )
+        session.set_option("default-shell", "/bin/sh")
+        session.set_option("default-command", "/bin/sleep 600")
+        mgr = TmuxManager(session_name="marks")
+        mgr._server = server
+        yield mgr, session
+    finally:
+        close_namespace()
+        assert not root.exists()
+
+
+async def test_local_marks_ignore_global_defaults_and_survive_reconnect(
+    isolated_tmux,
+) -> None:
+    mgr, session = isolated_tmux
+    server = session.server
+    server.cmd("set-option", "-gw", "@ccgram_topic", "1")
+    session.set_option("@ccgram_topic", "1")
+    first = session.new_window(window_name="project")
+    second = session.new_window(window_name="project")
+    assert first.window_id is not None and second.window_id is not None
+    before = await mgr.list_windows()
+    assert {window.window_id for window in before} >= {
+        first.window_id,
+        second.window_id,
+    }
+    assert all(window.topic_marked is False for window in before)
+    assert await mgr.set_topic_mark(
+        first.window_id, True, write_guard=RecordingTopicMarkGuard()
+    )
+    assert await mgr.set_topic_mark(
+        first.window_id, True, write_guard=RecordingTopicMarkGuard()
+    )
+
+    reconnected = TmuxManager(session_name="marks")
+    reconnected._server = libtmux.Server(socket_path=server.socket_path)
+    windows = await reconnected.list_windows_for_reconciliation()
+    assert windows is not None
+    marks = {window.window_id: window.topic_marked for window in windows}
+    assert marks[first.window_id] is True
+    assert marks[second.window_id] is False
+
+    first.rename_window("_hidden")
+    hidden = await reconnected.find_window_by_id(first.window_id)
+    assert hidden is not None and hidden.topic_marked is True
+    assert not hidden.topic_eligible
+    assert await reconnected.set_topic_mark(
+        first.window_id, False, write_guard=RecordingTopicMarkGuard()
+    )
+    assert first in session.windows
+    assert server.cmd("show-options", "-gwv", "@ccgram_topic").stdout == ["1"]
+    assert session.show_option("@ccgram_topic") == 1
+
+
+async def test_new_window_and_respawn_do_not_copy_or_lose_selection(
+    isolated_tmux, tmp_path: Path
+) -> None:
+    mgr, session = isolated_tmux
+    first = session.new_window(window_name="project")
+    assert first.window_id is not None
+    assert await mgr.set_topic_mark(
+        first.window_id, True, write_guard=RecordingTopicMarkGuard()
+    )
+    result = first.cmd("respawn-pane", "-k", "/bin/sh")
+    assert result.returncode == 0
+    after_respawn = await mgr.find_window_by_id(first.window_id)
+    assert after_respawn is not None and after_respawn.topic_marked is True
+    ok, _, _, new_id = await mgr.create_window(
+        str(tmp_path), window_name="project", start_agent=False
+    )
+    assert ok
+    created = await mgr.find_window_by_id(new_id)
+    assert created is not None and created.topic_marked is False
+
+
+async def test_server_destruction_does_not_restore_marks_by_reused_id(
+    isolated_tmux,
+) -> None:
+    mgr, session = isolated_tmux
+    original = session.new_window(window_name="project")
+    assert original.window_id is not None
+    assert await mgr.set_topic_mark(
+        original.window_id, True, write_guard=RecordingTopicMarkGuard()
+    )
+    session.server.kill()
+    replacement = session.server.new_session(session_name="marks")
+    replacement.new_window(window_name="project")
+    windows = await mgr.list_windows_for_reconciliation()
+    assert windows is not None
+    assert original.window_id in {window.window_id for window in windows}
+    assert all(window.topic_marked is False for window in windows)
+
+
+async def test_expected_owner_is_stable_through_unmark_and_native_respawn(
+    isolated_tmux,
+) -> None:
+    mgr, session = isolated_tmux
+    window = session.new_window(window_name="project")
+    wid = window.window_id
+    assert wid is not None
+    row = await mgr.find_window_by_id(wid)
+    assert row is not None and row.topic_mark_owner
+    owner = row.topic_mark_owner
+    assert await mgr.set_topic_mark(
+        wid, True, owner=owner, write_guard=RecordingTopicMarkGuard()
+    )
+    token = window.cmd("show-options", "-wv", "@ccgram_topic").stdout[0]
+    assert token.startswith("v1:1:")
+    assert await mgr.set_topic_mark(
+        wid, True, owner=owner, write_guard=RecordingTopicMarkGuard()
+    )
+    assert window.cmd("show-options", "-wv", "@ccgram_topic").stdout == [token]
+    assert window.cmd("respawn-pane", "-k", "/bin/sh").returncode == 0
+    assert await mgr.set_topic_mark(
+        "@999", False, owner=owner, write_guard=RecordingTopicMarkGuard()
+    )
+    cleared = await mgr.find_window_by_id(wid)
+    assert cleared is not None and cleared.topic_mark_owner == owner
+    assert cleared.topic_marked is False
+    assert window.cmd("show-options", "-wv", "@ccgram_topic").stdout == [
+        token.replace("v1:1:", "v1:0:")
+    ]
+
+
+async def test_explicit_metadata_restore_uses_owner_not_old_routing_id(
+    isolated_tmux,
+) -> None:
+    mgr, session = isolated_tmux
+    original = session.new_window(window_name="project")
+    old_id = original.window_id
+    assert old_id is not None
+    row = await mgr.find_window_by_id(old_id)
+    assert row is not None and row.topic_mark_owner
+    owner = row.topic_mark_owner
+    assert await mgr.set_topic_mark(
+        old_id, True, owner=owner, write_guard=RecordingTopicMarkGuard()
+    )
+    token = original.cmd("show-options", "-wv", "@ccgram_topic").stdout[0]
+    original.kill()
+    restored = session.new_window(window_name="project")
+    assert restored.window_id != old_id
+    restored.set_option("@ccgram_topic", token)
+    assert await mgr.set_topic_mark(
+        old_id, False, owner=owner, write_guard=RecordingTopicMarkGuard()
+    )
+    found = await mgr.find_window_by_id(restored.window_id)
+    assert found is not None and found.topic_mark_owner == owner
+    assert found.topic_marked is False
+
+
+async def test_copied_owners_are_quarantined_without_deleting_liveness(
+    isolated_tmux,
+) -> None:
+    mgr, session = isolated_tmux
+    first = session.new_window(window_name="project")
+    assert first.window_id is not None
+    row = await mgr.find_window_by_id(first.window_id)
+    assert row is not None and row.topic_mark_owner
+    assert await mgr.set_topic_mark(
+        first.window_id,
+        True,
+        owner=row.topic_mark_owner,
+        write_guard=RecordingTopicMarkGuard(),
+    )
+    token = first.cmd("show-options", "-wv", "@ccgram_topic").stdout[0]
+    second = session.new_window(window_name="project")
+    second.set_option("@ccgram_topic", token)
+    windows = await mgr.list_windows_for_reconciliation()
+    assert windows is not None
+    copies = [
+        window
+        for window in windows
+        if window.window_id in {first.window_id, second.window_id}
+    ]
+    assert len(copies) == 2 and all(window.topic_eligible for window in copies)
+    assert all(
+        window.topic_marked is None and window.topic_mark_owner is None
+        for window in copies
+    )
+    assert not await mgr.set_topic_mark(
+        first.window_id,
+        False,
+        owner=row.topic_mark_owner,
+        write_guard=RecordingTopicMarkGuard(),
+    )
+    assert first.cmd("show-options", "-wv", "@ccgram_topic").stdout == [token]
+    assert second.cmd("show-options", "-wv", "@ccgram_topic").stdout == [token]
+
+
+async def test_reused_id_cannot_authorize_old_owner_after_server_destruction(
+    isolated_tmux,
+) -> None:
+    mgr, session = isolated_tmux
+    original = session.new_window(window_name="project")
+    wid = original.window_id
+    assert wid is not None
+    old = await mgr.find_window_by_id(wid)
+    assert old is not None and old.topic_mark_owner
+    assert await mgr.set_topic_mark(
+        wid, True, owner=old.topic_mark_owner, write_guard=RecordingTopicMarkGuard()
+    )
+    session.server.kill()
+    replacement_session = session.server.new_session(session_name="marks")
+    replacement = replacement_session.new_window(window_name="project")
+    assert replacement.window_id == wid
+    new = await mgr.find_window_by_id(wid)
+    assert new is not None and new.topic_mark_owner != old.topic_mark_owner
+    assert not await mgr.set_topic_mark(
+        wid, True, owner=old.topic_mark_owner, write_guard=RecordingTopicMarkGuard()
+    )
+    assert await mgr.set_topic_mark(
+        wid, True, owner=new.topic_mark_owner, write_guard=RecordingTopicMarkGuard()
+    )
+    token = replacement.cmd("show-options", "-wv", "@ccgram_topic").stdout
+    assert await mgr.set_topic_mark(
+        wid, False, owner=old.topic_mark_owner, write_guard=RecordingTopicMarkGuard()
+    )
+    assert replacement.cmd("show-options", "-wv", "@ccgram_topic").stdout == token
+
+
+@pytest.mark.parametrize("marked", [True, False])
+async def test_native_write_ack_loss_keeps_attempt_when_native_state_matches(
+    isolated_tmux, monkeypatch, marked: bool
+) -> None:
+    mgr, session = isolated_tmux
+    window = session.new_window(window_name="project")
+    wid = window.window_id
+    assert wid is not None
+    row = await mgr.find_window_by_id(wid)
+    assert row is not None and row.topic_mark_owner
+    assert await mgr.set_topic_mark(
+        wid,
+        not marked,
+        owner=row.topic_mark_owner,
+        write_guard=RecordingTopicMarkGuard(),
+    )
+    native = topic_mark_transport.run_marker_cli
+    writes = []
+
+    async def lost_ack(binary, args):
+        result = await native(binary, args)
+        if "set-option" in args:
+            writes.append(args)
+            return 1, "", "reply lost"
+        return result
+
+    monkeypatch.setattr(topic_mark_transport, "run_marker_cli", lost_ack)
+    write_guard = RecordingTopicMarkGuard()
+    assert not await mgr.set_topic_mark(
+        wid, marked, owner=row.topic_mark_owner, write_guard=write_guard
+    )
+    current = await mgr.find_window_by_id(wid)
+    assert current is not None and current.topic_marked is marked
+    assert len(write_guard.armed) == 1
+    assert write_guard.terminal_ids == []
+    assert len(writes) == 1
+
+
+@pytest.mark.parametrize(
+    "failed_command", ["show-options", "list-windows", "display-message"]
+)
+async def test_marker_read_failure_retains_liveness_and_never_settles_clear(
+    isolated_tmux, monkeypatch, failed_command
+) -> None:
+    from types import SimpleNamespace
+
+    mgr, session = isolated_tmux
+    window = session.new_window(window_name="project")
+    wid = window.window_id
+    assert wid is not None
+    row = await mgr.find_window_by_id(wid)
+    assert row is not None and row.topic_mark_owner
+    native = session.server.cmd
+
+    def fail(command, *args, **kwargs):
+        if failed_command in (command, *args) and (
+            failed_command != "list-windows" or "-a" in args
+        ):
+            return SimpleNamespace(returncode=1, stderr=["unavailable"], stdout=[])
+        return native(command, *args, **kwargs)
+
+    monkeypatch.setattr(session.server, "cmd", fail)
+    native_cli = topic_mark_transport.run_marker_cli
+
+    async def fail_cli(binary, args):
+        if failed_command in args:
+            return 1, "", "unavailable"
+        return await native_cli(binary, args)
+
+    monkeypatch.setattr(topic_mark_transport, "run_marker_cli", fail_cli)
+    rows = await mgr.list_windows_for_reconciliation()
+    assert rows is not None
+    live = next(window for window in rows if window.window_id == wid)
+    assert (
+        live.topic_eligible
+        and live.topic_marked is None
+        and live.topic_mark_owner is None
+    )
+    assert not await mgr.set_topic_mark(
+        wid, False, owner=row.topic_mark_owner, write_guard=RecordingTopicMarkGuard()
+    )
+
+
+async def test_foreign_backend_target_or_owner_cannot_mutate(isolated_tmux) -> None:
+    mgr, session = isolated_tmux
+    window = session.new_window(window_name="project")
+    wid = window.window_id
+    assert wid is not None
+    row = await mgr.find_window_by_id(wid)
+    assert row is not None and row.topic_mark_owner
+    assert not await mgr.set_topic_mark(
+        "157B4C8C-EFAE-40C2-BA54-9A5D7FD8B5E4",
+        True,
+        owner=row.topic_mark_owner,
+        write_guard=RecordingTopicMarkGuard(),
+    )
+    assert not await mgr.set_topic_mark(
+        wid,
+        True,
+        owner="agterm:157b4c8c-efae-40c2-ba54-9a5d7fd8b5e4",
+        write_guard=RecordingTopicMarkGuard(),
+    )
+    assert not any(
+        line.startswith("@ccgram_topic ")
+        for line in window.cmd("show-options", "-w").stdout
+    )
+
+
+async def test_malformed_owned_marker_prevents_false_absence_clear(
+    isolated_tmux,
+) -> None:
+    mgr, session = isolated_tmux
+    window = session.new_window(window_name="project")
+    wid = window.window_id
+    assert wid is not None
+    row = await mgr.find_window_by_id(wid)
+    assert row is not None and row.topic_mark_owner
+    assert await mgr.set_topic_mark(
+        wid, True, owner=row.topic_mark_owner, write_guard=RecordingTopicMarkGuard()
+    )
+    broken = session.new_window(window_name="broken")
+    broken.set_option("@ccgram_topic", "v1:1:broken")
+    assert not await mgr.set_topic_mark(
+        wid, False, owner=row.topic_mark_owner, write_guard=RecordingTopicMarkGuard()
+    )
+    unchanged = await mgr.find_window_by_id(wid)
+    assert unchanged is not None and unchanged.topic_marked is True
+    unknown = await mgr.find_window_by_id(broken.window_id)
+    assert (
+        unknown is not None
+        and unknown.topic_marked is None
+        and unknown.topic_mark_owner is None
+    )
+
+
+async def test_socket_metadata_change_preserves_exact_native_process_owner(
+    isolated_tmux, monkeypatch
+) -> None:
+    mgr, session = isolated_tmux
+    window = session.new_window(window_name="project")
+    wid = window.window_id
+    assert wid is not None
+    row = await mgr.find_window_by_id(wid)
+    assert row is not None and row.topic_mark_owner
+    native = topic_mark_transport.run_marker_cli
+
+    async def changed_metadata(binary, args):
+        result = await native(binary, args)
+        if "list-windows" in args:
+            os.utime(session.server.socket_path, None)
+        return result
+
+    monkeypatch.setattr(topic_mark_transport, "run_marker_cli", changed_metadata)
+    assert await mgr.set_topic_mark(
+        wid, True, owner=row.topic_mark_owner, write_guard=RecordingTopicMarkGuard()
+    )
+    current = await mgr.find_window_by_id(wid)
+    assert current is not None and current.topic_mark_owner == row.topic_mark_owner
+    assert current.topic_marked is True
+
+
+async def test_unreadable_owner_during_write_readback_is_not_verified(
+    isolated_tmux, monkeypatch
+) -> None:
+    mgr, session = isolated_tmux
+    target = session.new_window(window_name="project")
+    other = session.new_window(window_name="other")
+    wid = target.window_id
+    assert wid is not None
+    row = await mgr.find_window_by_id(wid)
+    assert row is not None and row.topic_mark_owner
+    native = topic_mark_transport.run_marker_cli
+    written = False
+
+    async def fail_readback(binary, args):
+        nonlocal written
+        if (
+            "show-options" in args
+            and written
+            and args[args.index("-t") + 1] == other.window_id
+        ):
+            return 1, "", "readback failed"
+        result = await native(binary, args)
+        if "set-option" in args:
+            written = True
+        return result
+
+    monkeypatch.setattr(topic_mark_transport, "run_marker_cli", fail_readback)
+    write_guard = RecordingTopicMarkGuard()
+    assert not await mgr.set_topic_mark(
+        wid, True, owner=row.topic_mark_owner, write_guard=write_guard
+    )
+    assert (
+        target.cmd("show-options", "-wv", "@ccgram_topic").stdout[0].startswith("v1:1:")
+    )
+    assert len(write_guard.armed) == 1
+    assert write_guard.terminal_ids == [write_guard.armed[0].dispatch_id]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Mac native retirement proof")
+async def test_ambiguous_pin_recovers_only_after_original_executor_exits(
+    isolated_tmux, monkeypatch
+):
+    mgr, session = isolated_tmux
+    window = session.new_window(window_name="project")
+    assert window.window_id is not None
+    row = await mgr.find_window_by_id(window.window_id)
+    assert row is not None and row.topic_mark_owner
+    native_cli = topic_mark_transport.run_marker_cli
+
+    async def lost_ack(binary, args):
+        result = await native_cli(binary, args)
+        return (1, "", "lost response") if "set-option" in args else result
+
+    monkeypatch.setattr(topic_mark_transport, "run_marker_cli", lost_ack)
+    write_guard = RecordingTopicMarkGuard()
+    assert not await mgr.set_topic_mark(
+        window.window_id, True, owner=row.topic_mark_owner, write_guard=write_guard
+    )
+    assert len(write_guard.armed) == 1 and write_guard.terminal_ids == []
+    witness = write_guard.armed[0]
+    assert witness.pin_path is not None
+    pin = Path(witness.pin_path)
+    assert pin.exists()
+    assert await mgr.recover_topic_mark_write(witness) is False
+    with closing(select.kqueue()) as queue:
+        queue.control(
+            [
+                select.kevent(
+                    witness.native_pid,
+                    filter=select.KQ_FILTER_PROC,
+                    flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE | select.KQ_EV_ONESHOT,
+                    fflags=select.KQ_NOTE_EXIT,
+                )
+            ],
+            0,
+        )
+        session.server.kill()
+        events = queue.control(None, 1, 5)
+        assert len(events) == 1 and events[0].ident == witness.native_pid
+        assert events[0].fflags & select.KQ_NOTE_EXIT
+    replacement = session.server.new_session(
+        session_name="marks", window_command="/bin/sleep 600"
+    )
+    replacement.new_window(window_name="replacement")
+    assert await mgr.recover_topic_mark_write(witness) is True
+    assert not pin.parent.exists()
+    assert replacement in session.server.sessions
+
+
+async def test_native_endpoint_scope_alias_matches_dispatch_witness(isolated_tmux):
+    mgr, session = isolated_tmux
+    window = session.new_window(window_name="project")
+    assert window.window_id is not None
+    scope = await mgr.topic_mark_endpoint_scope()
+    assert scope is not None
+    path = Path(session.server.socket_path)
+    alias = path.parent / "alias"
+    os.link(path, alias)
+    try:
+        aliased = TmuxManager(session_name="marks")
+        aliased._server = libtmux.Server(socket_path=str(alias))
+        assert await aliased.topic_mark_endpoint_scope() == scope
+        write_guard = RecordingTopicMarkGuard()
+        assert await mgr.set_topic_mark(window.window_id, True, write_guard=write_guard)
+        assert write_guard.armed[0].endpoint_scope == scope
+        assert await mgr.topic_mark_endpoint_scope() == scope
+    finally:
+        alias.unlink(missing_ok=True)

@@ -1,4 +1,4 @@
-.PHONY: fmt lint lint-lazy test test-integration test-integration-llm test-e2e test-all typecheck deptry check install dev build clean archfit arch-guard arch-check arch-score arch-review
+.PHONY: fmt lint lint-lazy test test-integration test-integration-llm test-e2e test-all typecheck deptry check install dev build clean archfit arch-guard arch-check arch-rules
 
 fmt:
 	uv run ruff format src/ tests/
@@ -50,34 +50,22 @@ arch-guard:
 	  tests/ccgram/test_window_store_import_boundary.py \
 	  tests/ccgram/test_multiplexer_contract.py \
 	  tests/ccgram/test_handler_layering_invariants.py \
+	  tests/ccgram/test_runtime_boundaries.py \
 	  tests/ccgram/test_herdr_boundary_audit.py \
 	  tests/ccgram/test_herdr_identity_audit.py \
 	  tests/ccgram/test_herdr_legacy_model_audit.py
 
-# archfit: report-only architecture analysis.
+# Archfit 4 commands use the checked-in schema 3 policy.
 archfit:
-	@archfit analyze --config .archfit.yaml
+	@archfit report
 
-# arch-check: archfit whole-graph drift gate (forbidden-dep + cycle + coupling).
-# ~45s (scip indexing). Blocks only on gate findings (exit 1); warnings (exit 2:
-# advisory cycle, BC advisories, coupling scorecard) do NOT block. Run by the
-# pre-push hook (scoped to src changes) and suitable for CI.
+arch-rules:
+	@archfit rules
+
+# Whole-graph drift check. Archfit's exit codes are meaningful: 0 pass, 1 fail,
+# 2 unknown. Do not silently skip a missing or incompatible installation.
 arch-check:
-	@command -v archfit >/dev/null 2>&1 || { echo "archfit not installed — skipping (see github.com/alexei-led/archfit)"; exit 0; }; \
-	archfit check --help >/dev/null 2>&1 || { echo "archfit version does not support 'check' — skipping (install v1.6+)"; exit 0; }; \
-	archfit check --config .archfit.yaml; ec=$$?; \
-	if [ $$ec -eq 0 ] || [ $$ec -eq 2 ]; then exit 0; fi; \
-	echo "make: archfit drift gate FAILED (exit $$ec)"; exit $$ec
-
-# arch-score: banded architecture scorecard (coupling / cohesion / fitness).
-# Report-only — use to track architecture health and improvement over time.
-arch-score:
-	@archfit analyze --config .archfit.yaml --markdown
-
-# arch-review: off-gate LLM narrative appended to the standard analysis output.
-# Needs AI config in .archfit.yaml and provider credentials in the environment.
-arch-review:
-	@archfit analyze --config .archfit.yaml --ai-summary
+	@archfit check
 
 install:
 	uv sync

@@ -1,8 +1,5 @@
-"""Tests for bot-level error handler, shutdown notification, and signal diagnostics."""
+"""Tests for bot-level errors and shutdown presentation."""
 
-import contextlib
-import io
-import signal
 from collections.abc import Iterator
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,6 +9,7 @@ from telegram.error import BadRequest, Conflict, NetworkError, RetryAfter, Teleg
 from telegram.request import HTTPXRequest
 
 from ccgram.bot import (
+    GET_SHUTDOWN_REASON_KEY,
     _error_handler,
     _record_successful_poll,
     cancel_shutdown_watchdog,
@@ -169,14 +167,13 @@ class TestErrorHandlerStaleCallback:
 
 
 class TestShutdownNotification:
-    async def test_sends_to_general_topic(self) -> None:
+    @pytest.mark.parametrize("reason", ["Clean exit", "Received SIGINT"])
+    async def test_sends_runtime_reason_to_general_topic(self, reason: str) -> None:
         app = MagicMock()
         app.bot.send_message = AsyncMock()
+        app.bot_data = {GET_SHUTDOWN_REASON_KEY: lambda: reason}
 
-        with (
-            patch("ccgram.bot.config") as mock_config,
-            patch("ccgram.main._shutdown_signal", signal.SIGINT),
-        ):
+        with patch("ccgram.bot.config") as mock_config:
             mock_config.group_id = -100123
             await _send_shutdown_notification(app)
 
@@ -184,7 +181,7 @@ class TestShutdownNotification:
         call_kwargs = app.bot.send_message.call_args.kwargs
         assert call_kwargs["chat_id"] == -100123
         assert "message_thread_id" not in call_kwargs
-        assert "SIGINT" in call_kwargs["text"]
+        assert reason in call_kwargs["text"]
 
     async def test_skipped_without_group_id(self) -> None:
         app = MagicMock()
@@ -196,60 +193,26 @@ class TestShutdownNotification:
 
         app.bot.send_message.assert_not_called()
 
-    async def test_clean_exit_reason(self) -> None:
+    async def test_clean_exit_without_runtime_reason_getter(self) -> None:
         app = MagicMock()
         app.bot.send_message = AsyncMock()
+        app.bot_data = {}
 
-        with (
-            patch("ccgram.bot.config") as mock_config,
-            patch("ccgram.main._shutdown_signal", 0),
-        ):
+        with patch("ccgram.bot.config") as mock_config:
             mock_config.group_id = -100123
             await _send_shutdown_notification(app)
 
         text = app.bot.send_message.call_args.kwargs["text"]
         assert "Clean exit" in text
 
-    async def test_send_failure_does_not_crash(self) -> None:
+    @pytest.mark.parametrize(
+        "error", [TelegramError("forbidden"), RuntimeError("closed")]
+    )
+    async def test_send_failure_does_not_crash(self, error: Exception) -> None:
         app = MagicMock()
-        app.bot.send_message = AsyncMock(side_effect=TelegramError("forbidden"))
+        app.bot.send_message = AsyncMock(side_effect=error)
+        app.bot_data = {}
 
-        with (
-            patch("ccgram.bot.config") as mock_config,
-            patch("ccgram.main._shutdown_signal", 0),
-        ):
+        with patch("ccgram.bot.config") as mock_config:
             mock_config.group_id = -100123
             await _send_shutdown_notification(app)
-
-
-class TestSignalDiagnostics:
-    def test_signal_handler_records_signum_and_raises(self) -> None:
-        from ccgram import main
-
-        stderr_capture = io.StringIO()
-        with (
-            patch.object(main, "_shutdown_signal", 0),
-            patch("ccgram.bot.arm_shutdown_watchdog") as arm_watchdog,
-            patch("sys.stderr", stderr_capture),
-        ):
-            with contextlib.suppress(SystemExit):
-                main._on_signal(signal.SIGINT)
-            assert main._shutdown_signal == signal.SIGINT
-
-        arm_watchdog.assert_called_once_with(exit_code=128 + signal.SIGINT)
-
-        output = stderr_capture.getvalue()
-        assert "SIGINT" in output
-        assert "call stack" not in output
-
-    def test_install_uses_loop_add_signal_handler(self) -> None:
-        from ccgram.main import _install_signal_handlers, _on_signal
-
-        loop = MagicMock()
-        _install_signal_handlers(loop)
-
-        registered = {call.args[0] for call in loop.add_signal_handler.call_args_list}
-        assert registered == {signal.SIGINT, signal.SIGTERM, signal.SIGQUIT}
-        for call in loop.add_signal_handler.call_args_list:
-            assert call.args[1] is _on_signal
-            assert call.args[2] == call.args[0]

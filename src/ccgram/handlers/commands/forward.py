@@ -18,11 +18,13 @@ Pipeline:
 from __future__ import annotations
 
 
+import contextlib
 from typing import TYPE_CHECKING
 
 import structlog
 from telegram import Message, Update
 from telegram.constants import ChatAction
+from telegram.error import TelegramError
 
 from ...config import config
 from ...providers import (
@@ -115,6 +117,36 @@ def _is_session_reset_command(provider_name: str, cc_slash: str) -> bool:
     )
 
 
+async def _send_typing(message: Message, thread_id: int | None) -> None:
+    """Best-effort typing indicator: a network error must not drop the command (#366)."""
+    with contextlib.suppress(TelegramError):
+        await message.get_bot().send_chat_action(
+            chat_id=message.chat.id,
+            message_thread_id=thread_id,
+            action=ChatAction.TYPING,
+        )
+
+
+async def _send_confirmation(
+    message: Message, text: str, command: str, window_id: str
+) -> None:
+    """Reply with the delivery confirmation without failing the handler.
+
+    The command is already delivered: a failed reply must not skip the probes
+    or the /clear session reset that follow. ``safe_reply`` only re-raises
+    flood control (RetryAfter); the rate limiter has already logged its detail.
+    """
+    try:
+        await safe_reply(message, text)
+    except TelegramError as exc:
+        logger.warning(
+            "Command confirmation reply failed",
+            command=command,
+            window_id=window_id,
+            error=str(exc),
+        )
+
+
 async def _handle_pi_followup_command(
     message: Message,
     user_id: int,
@@ -131,11 +163,7 @@ async def _handle_pi_followup_command(
         await safe_reply(message, "Usage: `/followup <message>`")
         return
     logger.info("Forwarding Pi follow-up to window %s (user=%d)", display, user_id)
-    await message.get_bot().send_chat_action(
-        chat_id=message.chat.id,
-        message_thread_id=thread_id,
-        action=ChatAction.TYPING,
-    )
+    await _send_typing(message, thread_id)
     success, error_msg = await send_telegram_followup_to_window(
         user_id, window_id, thread_id, args, message.chat.id, adapter=adapter
     )
@@ -343,11 +371,7 @@ async def forward_command_handler(
     logger.info(
         "Forwarding command %s to window %s (user=%d)", cc_slash, display, user.id
     )
-    await update.message.get_bot().send_chat_action(
-        chat_id=update.message.chat.id,
-        message_thread_id=thread_id,
-        action=ChatAction.TYPING,
-    )
+    await _send_typing(update.message, thread_id)
     (
         probe_transcript_path,
         probe_transcript_offset,
@@ -388,7 +412,7 @@ async def forward_command_handler(
     # modal, so the "type /toolbar" guidance would mislead.
     if not args and cc_name.lower() in provider.capabilities.tui_picker_commands:
         confirmation += _picker_hint(provider_name)
-    await safe_reply(update.message, confirmation)
+    await _send_confirmation(update.message, confirmation, cc_slash, window_id)
     _arm_rc_probe_if_remote_control(update, window_id, cc_name)
     await _send_forward_post_probes(
         update.message,

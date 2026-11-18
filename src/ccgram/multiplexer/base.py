@@ -16,6 +16,8 @@ from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from ..topic_mark_types import TopicMarkWriteGuard, TopicMarkWriteWitness
+
 
 # ── Value types ────────────────────────────────────────────────────────
 
@@ -71,6 +73,24 @@ class WindowRef:
     existing alias-convergence owner fold a uniquely attested old persistence
     key onto this canonical window.  A repeated value in one listing is
     ambiguous and must not be migrated.
+    """
+
+    topic_marked: bool | None = False
+    """Native selection for automatic topic admission, independent of liveness.
+
+    ``None`` means the backend could not confirm the marker; it never grants
+    marked-mode admission. Existing bindings and ``topic_eligible`` are unchanged.
+    """
+
+    topic_markable: bool = True
+    """Whether this target has its own native marker (agterm splits do not)."""
+
+    topic_mark_owner: str | None = None
+    """Opaque native selection-resource identity, never a routing/input alias.
+
+    Healthy unmarked resources expose a witness too; None means ownership is
+    unconfirmed. Persist this before changing selection so retries cannot act
+    on a new terminal that recycled an old routing ID.
     """
 
     def matches(self, window_id: str) -> bool:
@@ -344,6 +364,43 @@ class Multiplexer(Protocol):
         ``None`` means the backend could not confirm the listing (an
         unreachable socket, a failed command). It is never an empty listing:
         treating it as one closes every binding the bot holds.
+        """
+        ...
+
+    async def set_topic_mark(
+        self,
+        window_id: str,
+        marked: bool,
+        *,
+        owner: str | None = None,
+        write_guard: TopicMarkWriteGuard | None = None,
+    ) -> bool:
+        """Set selection with verified readback, scoped to the expected owner.
+
+        With owner, act only on that uniquely proven native resource, even if
+        its routing ID changed. A complete validated absence can confirm clear,
+        never mark-on. No stale-ID fallback. Without owner, resolve the fresh
+        target first. Unknown, duplicate or malformed ownership returns False.
+        Never infer ownership from a name, cwd or layout. Actual writes require
+        the state owner's durable write_guard; a native no-op does not settle
+        an existing journal attempt.
+        """
+        ...
+
+    async def topic_mark_endpoint_scope(self) -> str | None:
+        """Identify the actual native endpoint, not an owner or configured name.
+
+        Unknown never means a global/default scope. This getter is read-only.
+        """
+        ...
+
+    async def recover_topic_mark_write(
+        self, witness: TopicMarkWriteWitness
+    ) -> bool | None:
+        """True after executor retirement and exact owned-pin cleanup.
+
+        False means the same executor is alive; None means proof is unavailable.
+        Recovery never kills or restarts native processes.
         """
         ...
 

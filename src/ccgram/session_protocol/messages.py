@@ -1,7 +1,8 @@
 """Provider-native records to messages. History and live use this one builder.
 
 No Telegram formatting or mutable counters. Rebuilding a transcript prefix gives
-identical IDs/revisions after a restart. Tool pairing precedes pagination.
+identical IDs/revisions after a restart. Tool pairing precedes pagination. Large
+values are re-read from the transcript on demand (see MessageBuilder).
 """
 
 from __future__ import annotations
@@ -9,6 +10,8 @@ from __future__ import annotations
 import json
 import re
 import difflib
+from collections import OrderedDict
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from datetime import UTC, datetime
@@ -17,6 +20,11 @@ from typing import Any
 from .models import Message, Part
 
 _PART_FIELDS = frozenset(part_field.name for part_field in fields(Part)) - {"id"}
+_CHAT_ROLES = ("user", "assistant")
+_CODEX_USER_CONTEXT_RE = re.compile(
+    r"^(?:<(?:environment_context|permissions|user_instructions)(?:\s|>)|"
+    r"# AGENTS\.md instructions for )"
+)
 
 _ANTIGRAVITY_METADATA_RE = re.compile(
     r"<(ADDITIONAL_METADATA|USER_SETTINGS_CHANGE|USER_INFORMATION|USER_RULES|SKILLS|PLUGINS|SUBAGENTS|MESSAGING|CONVERSATION_TRANSCRIPT|ARTIFACTS|SLASH_COMMANDS|GUIDELINES|COMMUNICATION_STYLE)>[\s\S]*?</\1>",
@@ -61,7 +69,6 @@ def read_entries(
     line is ignored; the next poll will read it after it is completed.
     """
     raw = source.read_bytes() if isinstance(source, Path) else source
-    result = []
     if provider == "gemini":
         try:
             document = json.loads(raw)
@@ -76,7 +83,18 @@ def read_entries(
                 for index, entry in enumerate(document["messages"])
                 if isinstance(entry, dict)
             ]
-    offset = 0
+    entries, _ = split_jsonl(raw)
+    return entries
+
+
+def split_jsonl(raw: bytes, base: int = 0) -> tuple[list[SourceEntry], int]:
+    """Parse complete JSONL records and report the bytes they consumed.
+
+    `base` is the transcript offset of `raw`, so entry offsets stay absolute.
+    An unfinished final line is left unconsumed until its newline arrives.
+    """
+    entries: list[SourceEntry] = []
+    consumed = 0
     for line in raw.splitlines(keepends=True):
         if not line.endswith(b"\n"):
             break
@@ -85,9 +103,9 @@ def read_entries(
         except ValueError, UnicodeDecodeError:
             data = None
         if isinstance(data, dict):
-            result.append(SourceEntry(offset, data))
-        offset += len(line)
-    return result
+            entries.append(SourceEntry(base + consumed, data))
+        consumed += len(line)
+    return entries, consumed
 
 
 def _text(value: Any) -> str:
@@ -246,6 +264,8 @@ class TranscriptBatch:
     tool_names: tuple[tuple[str, str], ...] = ()
     tool_summaries: tuple[tuple[str, str], ...] = ()
     tool_diffs: tuple[tuple[str, dict[str, Any]], ...] = ()
+    source_generation: int | None = None
+    source_identity: tuple[int, int] | None = None
 
 
 def _codex(entry: SourceEntry, state: _CodexState) -> TranscriptRecord | None:
@@ -258,11 +278,20 @@ def _codex(entry: SourceEntry, state: _CodexState) -> TranscriptRecord | None:
     timestamp = raw.get("timestamp")
     key = str(data.get("id") or f"o{entry.offset}")
     kind = data.get("type")
-    if raw.get("type") == "input_item" and data.get("role") == "user":
+    if raw.get("type") == "input_item":
+        if data.get("role") != "user" or kind not in (None, "message"):
+            return None
         return _codex_message(data, key, timestamp, state)
     if not isinstance(kind, str):
         return None
-    if kind == "message" and data.get("role") in {"user", "assistant", "system"}:
+    if kind == "message" and data.get("role") in _CHAT_ROLES:
+        if data.get("role") == "user":
+            parts, _ = _content(data.get("content"))
+            first_text = next(
+                (part["text"] for part in parts if part.get("type") == "text"), ""
+            )
+            if _CODEX_USER_CONTEXT_RE.match(first_text.lstrip()):
+                return None
         return _codex_message(data, key, timestamp, state)
     return _codex_other_item(data, key, timestamp, state)
 
@@ -491,7 +520,7 @@ def _chat(entry: SourceEntry, provider: str) -> TranscriptRecord | None:
                 ),
             ),
         )
-    if role not in {"user", "assistant", "system"}:
+    if role not in _CHAT_ROLES:
         return None
     parts, results = _content(msg.get("content"))
     if provider == "pi" and role == "assistant" and msg.get("stopReason") == "error":
@@ -514,13 +543,18 @@ def _chat(entry: SourceEntry, provider: str) -> TranscriptRecord | None:
 def _claude(
     entry: SourceEntry, state: TranscriptParserState
 ) -> TranscriptRecord | None:
+    data = entry.data
+    kind = data.get("type")
+    if kind not in _CHAT_ROLES or any(
+        data.get(flag) for flag in ("isMeta", "isSidechain", "isCompactSummary")
+    ):
+        return None
+    message = data.get("message")
+    if not isinstance(message, dict) or message.get("role", kind) != kind:
+        return None
     record = _chat(entry, "claude")
     if record is None:
         return None
-    data = entry.data
-    message = data.get("message")
-    if not isinstance(message, dict):
-        return record
     if record.role == "user":
         content = message.get("content")
         blocks = content if isinstance(content, list) else []
@@ -579,6 +613,8 @@ def _claude_local_command(
 
 def _pi(entry: SourceEntry) -> TranscriptRecord | None:
     data = entry.data
+    if data.get("type") not in ("message", "bashExecution"):
+        return None
     message = data.get("message")
     message = message if isinstance(message, dict) else None
     execution = (
@@ -631,23 +667,21 @@ def _pi(entry: SourceEntry) -> TranscriptRecord | None:
 
 
 def _antigravity_role(data: dict[str, Any], kind: str) -> str | None:
-    role = data.get("role")
-    if role not in {"user", "assistant"}:
-        role_map = {
-            "user": "user",
-            "user_input": "user",
-            "user_explicit": "user",
-            "user_implicit": "user",
-            "planner_response": "assistant",
-            "model": "assistant",
-            "assistant": "assistant",
-            "info": "assistant",
-            "error": "assistant",
-        }
-        role = role_map.get(kind.lower()) or role_map.get(
-            str(data.get("source", "")).lower()
-        )
-    return role if isinstance(role, str) else None
+    role_map = {
+        "user": "user",
+        "user_input": "user",
+        "user_explicit": "user",
+        "user_implicit": "user",
+        "planner_response": "assistant",
+        "model": "assistant",
+        "assistant": "assistant",
+        "info": "assistant",
+        "error": "assistant",
+    }
+    expected = role_map.get(kind.lower())
+    if expected is None or data.get("role", expected) != expected:
+        return None
+    return expected
 
 
 def _antigravity_clean_user_parts(parts: list[dict[str, Any]]) -> None:
@@ -789,9 +823,9 @@ def parse_records(
             if provider == "claude"
             else _pi(entry)
             if provider == "pi"
-            else _chat(entry, provider)
+            else None
         )
-        if record is None:
+        if record is None or record.role not in {"user", "agent"}:
             continue
         if deduplicate_updates and provider == "gemini":
             record = _deduplicate_gemini_record(record, entry, parser_state)
@@ -887,6 +921,373 @@ def _gemini_unique_results(
     return tuple(results)
 
 
+SPILL_BYTES = 4096
+"""Part fields and tool outputs larger than this are re-read from the transcript."""
+CACHE_BYTES = 512 * 1024
+"""Per-source budget for materialized spilled values, least recently used first."""
+_SPILLABLE_FIELDS = frozenset({"text", "input", "diff"})
+_RESULT = "result"
+_MISSING = object()
+
+
+class SourceChangedError(OSError):
+    """The indexed transcript no longer holds the bytes a message was built from.
+
+    Re-observe the source. The next observation rebuilds the index.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class _Spill:
+    """Where one large value lives: its source record line, and its slot in it."""
+
+    offset: int
+    slot: int
+    field: str
+
+
+@dataclass(slots=True)
+class _Head:
+    """Latest record for one message ID, plus every source offset that wrote it."""
+
+    role: str
+    time: str | None
+    complete: bool
+    phase: str | None
+    parts: tuple[Part, ...]
+    spills: tuple[tuple[int, str, _Spill], ...]
+    offsets: list[int]
+    position: int
+
+
+@dataclass(slots=True)
+class _CallResult:
+    status: str
+    output: dict[str, Any] | None
+    spill: _Spill | None
+    offsets: list[int]
+
+
+class _ByteLRU:
+    """Least-recently-used cache bounded by the summed size of its values.
+
+    Keys are source record offsets. A value larger than the whole budget is not
+    kept.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._size = 0
+        self._items: OrderedDict[int, tuple[Any, int]] = OrderedDict()
+
+    def get(self, key: int) -> Any:
+        item = self._items.get(key)
+        if item is None:
+            return _MISSING
+        self._items.move_to_end(key)
+        return item[0]
+
+    def put(self, key: int, value: Any, size: int) -> None:
+        if size > self._limit:
+            return
+        previous = self._items.pop(key, None)
+        if previous is not None:
+            self._size -= previous[1]
+        self._items[key] = (value, size)
+        self._size += size
+        while self._size > self._limit:
+            _, (_, evicted) = self._items.popitem(last=False)
+            self._size -= evicted
+
+
+def _json_size(value: Any) -> int:
+    if isinstance(value, str):
+        return len(value)
+    return len(json.dumps(value, default=str))
+
+
+def _is_large(value: Any) -> bool:
+    return value is not None and _json_size(value) > SPILL_BYTES
+
+
+def _drop_tool_maps(state: TranscriptParserState) -> None:
+    """Forget the tool maps the Telegram reader renders from.
+
+    The builder never reads them, and they grow with every tool call and Edit diff.
+    """
+    state.tool_names.clear()
+    state.tool_summaries.clear()
+    state.tool_diffs.clear()
+
+
+class MessageBuilder:
+    """Canonical message index. Feed source records in order; query messages.
+
+    History, live publication, and batch callers all use this class. Feeding the
+    same records in any chunking gives the same IDs, revisions, and parts as one
+    batch build. A tool result attaches to the message that currently claims its
+    call ID, so a result seen before its call still attaches.
+
+    With a `reader` (the transcript's byte-range reader), a value larger than
+    SPILL_BYTES stays in the transcript: the index keeps its record offset and
+    slot, and materializing a message re-parses that one record. Batch builds
+    have no reader and keep every value in memory. Every provider, Gemini
+    included, is JSONL and is indexed with the transcript's reader.
+    """
+
+    def __init__(
+        self,
+        conversation_id: str,
+        provider: str,
+        generation: int = 0,
+        *,
+        reader: Callable[[int], bytes] | None = None,
+    ) -> None:
+        self.conversation_id = conversation_id
+        self.provider = provider
+        self.generation = generation
+        self._reader = reader
+        self._parser = TranscriptParserState()
+        self._records = _ByteLRU(CACHE_BYTES)
+        self._ids: list[str] = []
+        self._heads: dict[str, _Head] = {}
+        self._claims: dict[str, tuple[str, int]] = {}
+        self._owned: dict[str, set[str]] = {}
+        self._results: dict[str, _CallResult] = {}
+        self._dirty: set[str] = set()
+
+    @property
+    def ids(self) -> list[str]:
+        """Message IDs in first-observed order. Callers must not mutate it."""
+        return self._ids
+
+    def position(self, message_id: str) -> int | None:
+        head = self._heads.get(message_id)
+        return head.position if head else None
+
+    def role(self, message_id: str) -> str:
+        return self._heads[message_id].role
+
+    def time(self, message_id: str) -> str | None:
+        return self._heads[message_id].time
+
+    def feed(self, entries: Sequence[SourceEntry]) -> None:
+        for entry in entries:
+            records, self._parser = parse_records([entry], self.provider, self._parser)
+            _drop_tool_maps(self._parser)
+            for _, record in records:
+                origin = _Spill(entry.offset, 0, "")
+                for slot, (call_id, output, failed) in enumerate(record.results):
+                    if call_id:
+                        self._record_result(origin, slot, call_id, output, failed)
+                if record.parts:
+                    self._record_message(origin, record)
+
+    def in_order(self, message_ids: Iterable[str]) -> list[str]:
+        """Sort known message IDs into message order."""
+        return sorted(message_ids, key=lambda mid: self._heads[mid].position)
+
+    def dirty_ids(self) -> list[str]:
+        """Message IDs changed since the last `clear_dirty`, in message order."""
+        return self.in_order(self._dirty)
+
+    def clear_dirty(self) -> None:
+        self._dirty.clear()
+
+    def calls_named(self, name: str) -> Iterator[Part]:
+        """Resolved tool parts called `name`, newest message first.
+
+        Only messages that have such a part are materialized.
+        """
+        for message_id in reversed(self._ids):
+            head = self._heads[message_id]
+            if not any(
+                part.type == "tool" and part.name == name for part in head.parts
+            ):
+                continue
+            for part in self._resolve(message_id).parts:
+                if part.type == "tool" and part.name == name:
+                    yield part
+
+    def message(self, message_id: str) -> Message:
+        return self._resolve(message_id)
+
+    def messages(
+        self, *, source_range: tuple[int, int | None] | None = None
+    ) -> tuple[Message, ...]:
+        """Messages with a contributing source offset in `source_range`, if given."""
+        if source_range is None:
+            return tuple(self.message(message_id) for message_id in self._ids)
+        start, end = source_range
+        return tuple(
+            self.message(message_id)
+            for message_id in self._ids
+            if any(
+                offset >= start and (end is None or offset < end)
+                for offset in self._contributing(message_id)
+            )
+        )
+
+    def _record_message(self, origin: _Spill, record: TranscriptRecord) -> None:
+        message_id = f"{self.conversation_id}/{'g' + str(self.generation) + '/' if self.generation else ''}{record.key}"
+        parts: list[Part] = []
+        spills: list[tuple[int, str, _Spill]] = []
+        for i, part in enumerate(record.parts):
+            inline: dict[str, Any] = {}
+            for name, value in part.items():
+                if name not in _PART_FIELDS:
+                    continue
+                if (
+                    self._reader is not None
+                    and name in _SPILLABLE_FIELDS
+                    and _is_large(value)
+                ):
+                    spills.append((i, name, replace(origin, slot=i, field=name)))
+                else:
+                    inline[name] = value
+            parts.append(Part(id=f"{message_id}#{i}", **inline))
+        previous = self._heads.get(message_id)
+        offsets = previous.offsets if previous else []
+        offsets.append(origin.offset)
+        if previous is None:
+            position = len(self._ids)
+            self._ids.append(message_id)
+        else:
+            position = previous.position
+        self._heads[message_id] = _Head(
+            record.role,
+            record.time,
+            record.complete,
+            record.phase,
+            tuple(parts),
+            tuple(spills),
+            offsets,
+            position,
+        )
+        self._dirty.add(message_id)
+        for i, part in enumerate(parts):
+            if part.tool_call_id:
+                self._claim(part.tool_call_id, message_id, i)
+
+    def _claim(self, call_id: str, message_id: str, index: int) -> None:
+        previous = self._claims.get(call_id)
+        if previous == (message_id, index):
+            return
+        self._claims[call_id] = (message_id, index)
+        if previous and previous[0] != message_id:
+            self._owned[previous[0]].discard(call_id)
+            self._dirty.add(previous[0])
+        self._owned.setdefault(message_id, set()).add(call_id)
+
+    def _record_result(
+        self, origin: _Spill, slot: int, call_id: str, output: Any, failed: bool
+    ) -> None:
+        result = self._results.get(call_id)
+        if result is None:
+            result = self._results[call_id] = _CallResult("", None, None, [])
+        result.offsets.append(origin.offset)
+        result.status = "failed" if failed else "completed"
+        text = _text(output)
+        if self._reader is not None and _is_large(text):
+            result.output = None
+            result.spill = replace(origin, slot=slot, field=_RESULT)
+        else:
+            result.output = {"text": text, "truncated": False}
+            result.spill = None
+        owner = self._claims.get(call_id)
+        if owner:
+            self._dirty.add(owner[0])
+
+    def _owned_results(
+        self, message_id: str
+    ) -> Iterator[tuple[int | None, _CallResult]]:
+        """Results of calls this message claims, with the part index they apply to.
+
+        The index is None when a later record replaced the claimed part: the result
+        still counts toward the revision, so dropping the part raises it, but it
+        never attaches to a part with another call ID.
+        """
+        head = self._heads[message_id]
+        for call_id in self._owned.get(message_id, ()):
+            result = self._results.get(call_id)
+            if result is None:
+                continue
+            index = self._claims[call_id][1]
+            if index >= len(head.parts) or head.parts[index].tool_call_id != call_id:
+                yield None, result
+            else:
+                yield index, result
+
+    def _contributing(self, message_id: str) -> set[int]:
+        offsets = set(self._heads[message_id].offsets)
+        for _, result in self._owned_results(message_id):
+            offsets.update(result.offsets)
+        return offsets
+
+    def _resolve(self, message_id: str) -> Message:
+        head = self._heads[message_id]
+        parts = list(head.parts)
+        for slot, name, spill in head.spills:
+            parts[slot] = replace(parts[slot], **{name: self._materialize(spill)})
+        for index, result in self._owned_results(message_id):
+            if index is None:
+                continue
+            output = (
+                result.output
+                if result.spill is None
+                else self._materialize(result.spill)
+            )
+            parts[index] = replace(parts[index], status=result.status, output=output)
+        contributing = self._contributing(message_id)
+        return Message(
+            message_id,
+            len(contributing),
+            self.conversation_id,
+            head.role,
+            head.time,
+            head.complete,
+            tuple(parts),
+            phase=head.phase,
+        )
+
+    def _materialize(self, spill: _Spill) -> Any:
+        if self._reader is None:
+            raise SourceChangedError("A spilled value has no transcript reader")
+        records = self._parsed(spill.offset)
+        for record in records:
+            if spill.field == _RESULT and spill.slot < len(record.results):
+                return {
+                    "text": _text(record.results[spill.slot][1]),
+                    "truncated": False,
+                }
+            if spill.field != _RESULT and spill.slot < len(record.parts):
+                return record.parts[spill.slot][spill.field]
+        raise SourceChangedError("Indexed record no longer parses to its message")
+
+    def _parsed(self, offset: int) -> tuple[TranscriptRecord, ...]:
+        """Records of the source line at `offset`, parsed once while cached.
+
+        A line can hold several spilled values; the cache lets them share one read.
+        The parse uses a fresh parser state. A spilled value is a field of its own
+        record, and the state only changes keys and drops, which the index keeps.
+        """
+        cached = self._records.get(offset)
+        if cached is not _MISSING:
+            return cached
+        assert self._reader is not None
+        line = self._reader(offset)
+        try:
+            data = json.loads(line)
+        except ValueError as exc:
+            raise SourceChangedError("Indexed record is no longer valid JSON") from exc
+        parsed, _ = parse_records(
+            [SourceEntry(offset, data)], self.provider, TranscriptParserState()
+        )
+        records = tuple(record for _, record in parsed)
+        self._records.put(offset, records, len(line))
+        return records
+
+
 def build_messages(
     entries: list[SourceEntry],
     conversation_id: str,
@@ -895,70 +1296,7 @@ def build_messages(
     *,
     source_range: tuple[int, int | None] | None = None,
 ) -> tuple[Message, ...]:
-    """Build full replacements, joining results before a caller slices pages.
-
-    Repeated native IDs (Gemini updates) increment revision once per source
-    record; each distinct result line contributes once to its owner message.
-    """
-    messages: dict[str, Message] = {}
-    contributors: dict[str, set[int]] = {}
-    calls: dict[str, tuple[str, int]] = {}
-    results: list[tuple[int, str, Any, bool]] = []
-    records, _ = parse_records(entries, provider)
-    for entry, record in records:
-        results.extend(
-            (entry.offset, call_id, output, failed)
-            for call_id, output, failed in record.results
-        )
-        if not record.parts:
-            continue
-        message_id = f"{conversation_id}/{'g' + str(generation) + '/' if generation else ''}{record.key}"
-        contributors.setdefault(message_id, set()).add(entry.offset)
-        previous = messages.get(message_id)
-        parts = tuple(
-            Part(
-                id=f"{message_id}#{i}",
-                **{name: value for name, value in part.items() if name in _PART_FIELDS},
-            )
-            for i, part in enumerate(record.parts)
-        )
-        messages[message_id] = Message(
-            message_id,
-            previous.revision + 1 if previous else 1,
-            conversation_id,
-            record.role,
-            record.time,
-            record.complete,
-            parts,
-            phase=record.phase,
-        )
-        for i, part in enumerate(parts):
-            if part.tool_call_id:
-                calls[part.tool_call_id] = message_id, i
-    for offset, call_id, output, failed in results:
-        owner = calls.get(call_id)
-        if owner is None:
-            continue
-        message_id, index = owner
-        message = messages[message_id]
-        parts = list(message.parts)
-        parts[index] = replace(
-            parts[index],
-            status="failed" if failed else "completed",
-            output={"text": _text(output), "truncated": False},
-        )
-        contributors[message_id].add(offset)
-        messages[message_id] = replace(
-            message, parts=tuple(parts), revision=len(contributors[message_id])
-        )
-    if source_range is None:
-        return tuple(messages.values())
-    start, end = source_range
-    return tuple(
-        message
-        for message in messages.values()
-        if any(
-            offset >= start and (end is None or offset < end)
-            for offset in contributors[message.id]
-        )
-    )
+    """Build every message from complete source entries in one pass."""
+    builder = MessageBuilder(conversation_id, provider, generation)
+    builder.feed(entries)
+    return builder.messages(source_range=source_range)

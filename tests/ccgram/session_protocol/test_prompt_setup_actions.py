@@ -16,7 +16,12 @@ async def test_close_ignores_unavailable_transcript(
     path = tmp_path / "transcript.jsonl"
     if source == "unreadable":
         path.mkdir()
+    else:
+        path.touch()
     backend.target = replace(backend.target, transcript=path)
+    if source == "missing":
+        await service.refresh()
+        path.unlink()
     snapshot = (await service.list_sessions())[0]
     assert "terminal.paste" not in snapshot.capabilities
     assert "session.close" in snapshot.capabilities

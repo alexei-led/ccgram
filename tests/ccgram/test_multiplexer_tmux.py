@@ -173,15 +173,14 @@ async def test_reconciliation_listing_is_complete(mgr: TmuxManager) -> None:
 
 
 def test_reconciliation_window_keeps_identity_when_pane_query_fails() -> None:
-    class FailedPaneWindow:
-        window_id = "@7"
-        window_name = "project"
-
+    class FailedPaneWindow(_FakeWindow):
         @property
         def active_pane(self):
             raise OSError("pane unavailable")
 
-    window = TmuxManager._window_ref_for_reconciliation(FailedPaneWindow())  # type: ignore[arg-type]
+    window = TmuxManager._window_ref_for_reconciliation(
+        FailedPaneWindow("@7", "project")  # pyright: ignore[reportArgumentType]
+    )
 
     assert window is not None
     assert window.window_id == "@7"
@@ -214,10 +213,10 @@ def test_reconciliation_keeps_windows_list_windows_hides(
 
 
 def test_reconciliation_keeps_ccgram_own_window() -> None:
-    with patch.object(config, "own_window_id", "@9"):
-        window = TmuxManager._window_ref_for_reconciliation(  # type: ignore[arg-type]
-            _FakeWindow("@9", "ccgram")  # pyright: ignore[reportArgumentType]
-        )
+    window = TmuxManager._window_ref_for_reconciliation(  # type: ignore[arg-type]
+        _FakeWindow("@9", "ccgram"),  # pyright: ignore[reportArgumentType]
+        own_window_id="@9",
+    )
 
     assert window.window_id == "@9"
     assert window.topic_eligible is False
@@ -425,3 +424,91 @@ async def test_foreground_none_when_window_gone(mgr: TmuxManager) -> None:
 )
 def test_parse_ps_line(line: str, expected: tuple | None) -> None:
     assert TmuxManager._parse_ps_line(line) == expected
+
+
+async def test_foreground_preserves_argv_beyond_terminal_width(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    argv = [
+        "/home/runner/work/ccgram/ccgram/.venv/bin/python",
+        "/tmp/" + "project/" * 20 + "claude",
+    ]
+    line = "321 321 S+ " + " ".join(argv)
+
+    async def spawn(*args: object, **_kwargs: object) -> AsyncMock:
+        proc = AsyncMock()
+        proc.returncode = 0
+        output = line if "-ww" in args else line[:80]
+        proc.communicate.return_value = (output.encode(), b"")
+        return proc
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
+    assert await TmuxManager._ps_foreground("/dev/pts/1") == (321, 321, argv)
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"), [(None, "ccgram"), ("local", "local")]
+)
+def test_tmux_manager_uses_credential_free_session_default(
+    monkeypatch: pytest.MonkeyPatch, configured: str | None, expected: str
+) -> None:
+    if configured is None:
+        monkeypatch.delenv("TMUX_SESSION_NAME", raising=False)
+    else:
+        monkeypatch.setenv("TMUX_SESSION_NAME", configured)
+
+    backend = TmuxManager()
+
+    assert backend.session_name == expected
+    assert backend.main_window_name == "__main__"
+    assert backend.own_window_id is None
+    assert TmuxManager(session_name="explicit").session_name == "explicit"
+
+
+async def test_configured_own_and_main_windows_stay_live_but_hidden(
+    mgr: TmuxManager,
+) -> None:
+    mgr.main_window_name = "landing"
+    mgr.own_window_id = "@9"
+    session = SimpleNamespace(
+        windows=[
+            _FakeWindow("@0", "landing"),
+            _FakeWindow("@9", "ccgram"),
+            _FakeWindow("@4", "_paused"),
+            _FakeWindow("@5", "project"),
+        ]
+    )
+    server = MagicMock()
+    server.sessions.get.return_value = session
+    server.cmd.return_value = SimpleNamespace(returncode=1, stderr=[], stdout=[])
+    mgr._server = server
+
+    with (
+        patch(
+            "ccgram.multiplexer.tmux.fetch_objs",
+            return_value=[{"session_name": mgr.session_name}],
+        ),
+        patch("libtmux.Session", return_value=session),
+    ):
+        visible = await mgr.list_windows()
+        live = await mgr.list_windows_for_reconciliation()
+
+    assert [window.window_id for window in visible] == ["@5"]
+    assert live is not None
+    assert [window.window_id for window in live] == ["@0", "@9", "@4", "@5"]
+    assert [window.topic_eligible for window in live] == [False, False, False, True]
+
+
+def test_get_or_create_session_uses_configured_main_window_name(
+    mgr: TmuxManager,
+) -> None:
+    mgr.main_window_name = "landing"
+    session = MagicMock()
+    server = MagicMock()
+    server.sessions.get.return_value = None
+    server.new_session.return_value = session
+    mgr._server = server
+
+    assert mgr.get_or_create_session() is session
+    assert server.new_session.call_args.kwargs["session_name"] == "ccgram-test"
+    session.windows[0].rename_window.assert_called_once_with("landing")

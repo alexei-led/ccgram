@@ -10,6 +10,7 @@ Key handler:
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING
 import structlog
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
@@ -204,11 +205,13 @@ async def handle_voice_message(
     if audio_bytes is None:
         return
 
-    await message.get_bot().send_chat_action(
-        chat_id=message.chat.id,
-        message_thread_id=message.message_thread_id,
-        action=ChatAction.TYPING,
-    )
+    # Best-effort: a network error here must not drop the voice note (#366).
+    with contextlib.suppress(TelegramError):
+        await message.get_bot().send_chat_action(
+            chat_id=message.chat.id,
+            message_thread_id=message.message_thread_id,
+            action=ChatAction.TYPING,
+        )
 
     result = await _transcribe_audio(message, transcriber, audio_bytes)
     if result is None:

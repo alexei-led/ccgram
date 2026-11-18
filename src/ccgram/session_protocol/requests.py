@@ -252,9 +252,11 @@ class RequestStore:
             self._consume(session_id, bound[0].identity)
             self._hook_prompts.pop(session_id)
             hook = None
-        structured = (
-            hook is not None and bound == (hook, prompt.fingerprint, version)
-        ) or self._match(hook, conversation_id, prompt)
+        # Native selectors may resemble questions, but never authorize a tool answer.
+        structured = prompt.menu is None and (
+            (hook is not None and bound == (hook, prompt.fingerprint, version))
+            or self._match(hook, conversation_id, prompt)
+        )
         if (
             current
             and current.binding_version == version

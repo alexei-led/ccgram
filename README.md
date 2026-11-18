@@ -62,7 +62,7 @@ Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one 
 
 ## What You Can Do
 
-- **Bind agents to topics** — one agent per group or private-chat topic; create via directory browser
+- **Start from one line** — `codex ccgram fix the hook timeout` creates the session, binds the topic, and forwards the instruction; `/bind` adopts an already-running window
 - **Auto-detect providers** — Supports Claude Code, Codex, Gemini, Pi, and Shell simultaneously
 - **Monitor live** — Terminal screenshots on demand or auto-refresh every 5 seconds
 - **Topic-aware command panels** — Four safe General controls; session-specific CCGram actions and original agent command names in each topic
@@ -74,6 +74,10 @@ Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one 
 - **Direct choices** — Answer supported numbered and yes/no agent prompts with one tap
 
 Telegram shares its native slash-command suggestions across topics. CCGram keeps `/commands`, `/sessions`, `/sync`, and `/upgrade` in that list. `/commands` opens the current topic’s pinned panel with session-specific actions. See [topic command panels](docs/guides.md#topic-command-panels-commands).
+
+## Topic Discovery
+
+Automatic discovery remains the default. Set `CCGRAM_TOPIC_DISCOVERY=marked` to create automatic Telegram topics only for explicitly selected tmux windows, Herdr terminals, or agterm primary sessions. Use `ccgram topic status` to get exact target IDs, then `ccgram topic mark TARGET` or `ccgram topic unmark TARGET`. In marked mode, unmarking pauses forwarding and closes the topic without deleting history or stopping the terminal; re-marking resumes it. Use `/sync unflagged` to preview and confirm permanent deletion of paused topics. See the [operator guide](docs/guides.md#marked-only-discovery) and [native storage and limits](docs/design/marked-topic-discovery.md).
 
 ## Provider Switching
 
@@ -123,9 +127,28 @@ Get your user ID from [@userinfobot](https://t.me/userinfobot). For a group, get
 ccgram
 ```
 
-Open the configured group or private bot chat. Create a topic and send a message. The directory browser appears. Pick a project directory and an agent (Claude, Codex, Gemini, Pi, or Shell).
+Open the configured group or private bot chat, create a topic, and type one line:
+
+```text
+<agent>[:<mode>] <project|path> [@branch] <instruction...>
+```
+
+```text
+codex ccgram fix the hook timeout
+claude:safe ccgram refactor the parser
+pi archfit @perf-sweep profile the scan stage
+```
+
+CCGram resolves the project under `CCGRAM_PROJECTS_ROOTS` (default
+`~/Workspace`), starts the agent in YOLO mode, names the topic after the line,
+and forwards the instruction. No pickers. See
+[Starting a Session](docs/guides.md#starting-a-session-one-typed-line) for the
+grammar, the defaults that replaced each former step, and `/bind` for adopting
+an already-running window.
 
 **Prerequisites:** Python 3.14+, [tmux](https://github.com/tmux/tmux), [herdr](https://github.com/ogulcancelik/herdr), or [agterm](https://github.com/umputun/agterm), and one agent CLI. CCGram does not modify agent SDKs.
+
+**Hook setup:** `ccgram hook --install` installs asynchronous Claude Code hooks, including `SessionStart` and `Stop`. Re-run it after upgrading to update existing synchronous entries without duplicates. Codex and Pi use native async hooks. Gemini uses a detached background worker, so it does not wait for event reporting either. See [provider hooks](docs/providers.md#hooks) for setup and best-effort delivery limits.
 
 ### Herdr setup
 
