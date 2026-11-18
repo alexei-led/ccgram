@@ -807,14 +807,18 @@ Responses longer than 4096 characters are sent as a `.txt` document attachment i
 
 Send a photo or document to a bound topic. CCGram saves the file under
 `.ccgram-uploads/` in the session's working directory and tells the agent where
-to find it, along with any caption. The upload limit is 50 MB.
+to find it, along with any caption. Telegram's hosted Bot API limits
+[`getFile` downloads](https://core.telegram.org/bots/api#getfile) to 20 MB.
+CCGram separately rejects files above its local cap of 50 MiB; this does not
+raise Telegram's limit.
 
 If Telegram times out or hits another transient network error while fetching the
 file, CCGram tries up to three times total. Failed downloads don't leave a
-partial upload or replace an existing file. The upload directory's filesystem
-must support hard links so CCGram can save completed files without overwriting
-existing ones. If the file is saved but the agent notification fails, CCGram
-reports that separately and does not resend it.
+partial upload or replace an existing file. If the filesystem reports that
+hard links aren't supported, CCGram saves the completed file in a new
+subdirectory under `.ccgram-uploads/` and reports its actual path. If the file
+is saved but the agent notification fails, CCGram reports that separately and
+does not resend it.
 
 ## File Delivery (`/send`)
 

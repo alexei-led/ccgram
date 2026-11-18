@@ -13,12 +13,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 import contextlib
+import errno
 import structlog
 import re
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, mkdtemp
 
 from telegram import Message, Update
 from telegram.constants import ChatAction
@@ -41,7 +42,7 @@ _UPLOAD_DIR = ".ccgram-uploads"
 
 _MAX_FILENAME_BYTES = 200
 
-# Max file size in bytes (50 MB — Telegram Bot API limit for getFile)
+# CCGram's local size cap (50 MiB), separate from Telegram's download limit.
 _MAX_FILE_SIZE = 50 * 1024 * 1024
 _DOWNLOAD_ATTEMPTS = 3
 
@@ -187,6 +188,29 @@ async def _download_to_staging(message: Message, file_id: str, staged: Path) -> 
             return
 
 
+def _publish_download(staged: Path, dest: Path) -> str:
+    """Publish a complete file and return its path relative to the upload directory."""
+    try:
+        dest.hardlink_to(staged)
+    except OSError as exc:
+        if exc.errno not in {errno.ENOTSUP, errno.EOPNOTSUPP}:
+            raise
+    else:
+        return dest.name
+
+    # A new private directory reserves a unique namespace without exposing a
+    # placeholder file or replacing an existing upload. Both paths are on the
+    # upload filesystem, so publish by rename rather than copying into place.
+    folder = Path(mkdtemp(prefix="upload-", dir=dest.parent))
+    published = folder / dest.name
+    try:
+        staged.rename(published)
+    except OSError:
+        folder.rmdir()
+        raise
+    return str(published.relative_to(dest.parent))
+
+
 async def _download_and_save(
     message: Message,
     upload_path: Path,
@@ -197,8 +221,8 @@ async def _download_and_save(
 ) -> str | None:
     """Download a Telegram file and save it to the upload directory.
 
-    Returns the final filename on success, or None on failure (error already
-    replied to the user).
+    Returns the path relative to upload_path on success, or None on failure
+    (error already replied to the user).
     """
     # Pre-download size check
     if file_size is not None and file_size > _MAX_FILE_SIZE:
@@ -228,13 +252,11 @@ async def _download_and_save(
             # Metadata can be missing or inaccurate. Never publish an oversized file.
             actual_size = staged.stat().st_size
             if actual_size <= _MAX_FILE_SIZE:
-                # The download awaited the network; another upload may now own the
-                # original name. A hard link also protects the final name from races.
+                # The download awaited the network; recheck the directory and
+                # choose the destination only once the completed file is ready.
                 if upload_path.is_symlink():
                     raise OSError("Upload directory became a symlink")
-                dest = _unique_dest(dest)
-                dest.hardlink_to(staged)
-                return dest.name
+                return _publish_download(staged, _unique_dest(dest))
     except (OSError, TelegramError) as e:
         logger.error("Failed to save %s: %s", size_label.lower(), e)
         await safe_reply(message, "\u274c Failed to save file.")
@@ -273,18 +295,19 @@ async def _upload_and_notify(
     with contextlib.suppress(TelegramError):
         await message.chat.send_action(ChatAction.TYPING)
 
-    saved_name = await _download_and_save(
+    saved_path = await _download_and_save(
         message, upload_path, filename, file_id, file_size, size_label
     )
-    if not saved_name:
+    if not saved_path:
         return
 
-    rel_path = f"{_UPLOAD_DIR}/{saved_name}"
+    rel_path = f"{_UPLOAD_DIR}/{saved_path}"
     caption = message.caption or ""
     # Absolute path in the agent message: an agent resolves a relative one
     # against an arbitrary base (its home rather than the session cwd), and
     # the failed read then looks like the upload never happened.
-    claude_msg = claude_msg_tpl.format(name=saved_name, path=upload_path / saved_name)
+    absolute_path = upload_path / saved_path
+    claude_msg = claude_msg_tpl.format(name=absolute_path.name, path=absolute_path)
     if caption:
         claude_msg += f"\n\nUser note: {_sanitize_caption(caption)}"
 
