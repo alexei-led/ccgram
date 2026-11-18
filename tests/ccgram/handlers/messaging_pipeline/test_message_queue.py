@@ -1137,32 +1137,35 @@ class TestMessageQueueWorker:
         user_id = 87997
         mq._message_queues[user_id] = asyncio.Queue()
         mq._queue_locks[user_id] = asyncio.Lock()
-        receipts = [mq.DeliveryReceipt(), mq.DeliveryReceipt()]
-        tasks = []
-        for text, receipt in zip(("first", "second"), receipts, strict=True):
+        batch_receipt = mq.DeliveryReceipt(checkpoint=128)
+        other_receipt = mq.DeliveryReceipt(checkpoint=128)
+        for text, receipt in (
+            ("first", batch_receipt),
+            ("second", batch_receipt),
+            ("third", other_receipt),
+        ):
             receipt.track()
-            receipt.close()
-            tasks.append(
+            mq._message_queues[user_id].put_nowait(
                 ContentTask(
                     window_id="@0",
                     parts=(text,),
-                    role="assistant",
+                    thread_id=42,
+                    chat_id=-1001,
                     delivery_receipts=(receipt,),
                 )
             )
-            mq._message_queues[user_id].put_nowait(tasks[-1])
+        batch_receipt.close()
+        other_receipt.close()
 
         worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
         try:
-            with patch.object(
-                mq,
-                "_process_content_task",
-                new_callable=AsyncMock,
-                return_value=mq.DeliveryOutcome.DELIVERED,
-            ):
-                await asyncio.wait_for(mq._message_queues[user_id].join(), timeout=1)
+            await asyncio.wait_for(mq._message_queues[user_id].join(), timeout=1)
 
-            assert all(receipt.commit_ready for receipt in receipts)
+            assert [call.kwargs["text"] for call in bot.calls] == [
+                "first\n\nsecond\n\nthird"
+            ]
+            assert batch_receipt.commit_ready
+            assert other_receipt.commit_ready
         finally:
             worker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -1215,26 +1218,26 @@ class TestMessageQueueWorker:
             mq._message_queues.pop(user_id, None)
             mq._queue_locks.pop(user_id, None)
 
-    async def test_cancelled_merged_retry_fails_every_receipt(self, bot):
+    @pytest.mark.parametrize("cancel", [True, False], ids=["cancelled", "exhausted"])
+    async def test_aborted_merged_retry_fails_every_track(self, bot, cancel: bool):
         from ccgram.handlers.messaging_pipeline import message_queue as mq
 
         user_id = 88011
-        mq._message_queues[user_id] = asyncio.Queue()
+        q = mq._message_queues[user_id] = asyncio.Queue()
         mq._queue_locks[user_id] = asyncio.Lock()
-        receipts = [mq.DeliveryReceipt(), mq.DeliveryReceipt()]
-        for text, receipt in zip(("first", "second"), receipts, strict=True):
+        receipt = mq.DeliveryReceipt(checkpoint=128)
+        for text in ("first", "second"):
             receipt.track()
-            receipt.close()
-            mq._message_queues[user_id].put_nowait(
+            q.put_nowait(
                 ContentTask(
                     window_id="@0",
                     parts=(text,),
-                    role="assistant",
                     thread_id=42,
                     chat_id=-1001,
                     delivery_receipts=(receipt,),
                 )
             )
+        receipt.close()
         retry_sleep_started = asyncio.Event()
 
         async def block_retry_sleep(_delay: float) -> None:
@@ -1244,27 +1247,19 @@ class TestMessageQueueWorker:
         worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
         try:
             with (
-                patch.object(
-                    mq,
-                    "_process_content_task",
-                    new_callable=AsyncMock,
-                    side_effect=RetryAfter(1),
-                ) as process_content,
+                patch.object(mq, "_QUEUE_RETRY_BUDGET_SECONDS", 300 if cancel else 0),
                 patch.object(mq.asyncio, "sleep", side_effect=block_retry_sleep),
-                patch("random.uniform", return_value=0),
             ):
-                await retry_sleep_started.wait()
-                worker.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await worker
-            await asyncio.wait_for(mq._message_queues[user_id].join(), timeout=1)
-            process_content.assert_awaited_once()
-            assert process_content.await_args_list[0].args[2].parts == (
-                "first",
-                "second",
-            )
-            assert all(receipt.failed for receipt in receipts)
-            assert all(not receipt.commit_ready for receipt in receipts)
+                bot.set_side_effect("send_message", [RetryAfter(1)])
+                if cancel:
+                    await asyncio.wait_for(retry_sleep_started.wait(), timeout=1)
+                    worker.cancel()
+                await asyncio.wait_for(q.join(), timeout=1)
+
+            assert [call.kwargs["text"] for call in bot.calls] == ["first\n\nsecond"]
+            assert receipt._pending == 0
+            assert receipt.failed
+            assert not receipt.commit_ready
         finally:
             worker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -1280,43 +1275,38 @@ class TestMessageQueueWorker:
         user_id = 88004
         mq._message_queues[user_id] = asyncio.Queue()
         mq._queue_locks[user_id] = asyncio.Lock()
-        receipts = [mq.DeliveryReceipt(), mq.DeliveryReceipt()]
-        for receipt in receipts:
+        receipt = mq.DeliveryReceipt(checkpoint=128)
+        for text in ("first", "second"):
             receipt.track()
-            receipt.close()
-        mq._message_queues[user_id].put_nowait(
-            ContentTask(
-                window_id="@0",
-                parts=("first",),
-                thread_id=42,
-                chat_id=-1001,
-                delivery_receipts=(receipts[0],),
+            mq._message_queues[user_id].put_nowait(
+                ContentTask(
+                    window_id="@0",
+                    parts=(text,),
+                    thread_id=42,
+                    chat_id=-1001,
+                    delivery_receipts=(receipt,),
+                )
             )
-        )
-        mq._message_queues[user_id].put_nowait(
-            ContentTask(
-                window_id="@0",
-                parts=("second",),
-                thread_id=42,
-                chat_id=-1001,
-                delivery_receipts=(receipts[1],),
-            )
-        )
+        receipt.close()
         bot.set_side_effect("send_message", [RetryAfter(timedelta(seconds=0)), True])
+
+        async def check_retry_pending(_delay: float) -> None:
+            assert receipt._pending == 2
+            assert not receipt.commit_ready
+
         worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
         try:
-            with (
-                patch.object(mq.asyncio, "sleep", new_callable=AsyncMock),
-                patch("random.uniform", return_value=0),
-            ):
+            with patch.object(
+                mq.asyncio, "sleep", side_effect=check_retry_pending
+            ) as retry_sleep:
                 await asyncio.wait_for(mq._message_queues[user_id].join(), timeout=1)
 
-            assert bot.call_count("send_message") == 2
+            retry_sleep.assert_awaited_once()
             assert [call.kwargs["text"] for call in bot.calls] == [
                 "first\n\nsecond",
                 "first\n\nsecond",
             ]
-            assert all(receipt.commit_ready for receipt in receipts)
+            assert receipt.commit_ready
         finally:
             worker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
