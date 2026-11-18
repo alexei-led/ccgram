@@ -106,13 +106,14 @@ def test_ansi_pi_menu_and_numbered_description_are_safe() -> None:
     assert parse_direct_choices(status.raw_text) == CHOICES
 
 
-def test_described_numbered_prose_does_not_become_choices_for_other_providers() -> None:
-    assert (
-        parse_direct_choices(
-            "Pick one:\n→ 1. Alpha\n    Description\n  2. Beta\nEnter to select"
-        )
-        == ()
-    )
+def test_described_numbered_menu_is_choices_on_any_provider() -> None:
+    # Claude Code also indents option descriptions past the option number
+    # (verified against its live AskUserQuestion rendering), so description
+    # consumption is no longer Pi-only. Prose without an anchor still yields
+    # no buttons; see test_direct_choices for those cases.
+    assert parse_direct_choices(
+        "Pick one:\n→ 1. Alpha\n    Description\n  2. Beta\nEnter to select"
+    ) == (("1", "1. Alpha"), ("2", "2. Beta"))
 
 
 async def test_real_pi_provider_renders_telegram_choice_buttons() -> None:
