@@ -18,10 +18,11 @@ import re
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from telegram import Message, Update
 from telegram.constants import ChatAction
-from telegram.error import TelegramError
+from telegram.error import BadRequest, NetworkError, TelegramError
 from ..config import config
 from ..telegram_client import PTBTelegramClient
 from ..session_protocol.telegram import adapter_for
@@ -42,6 +43,7 @@ _MAX_FILENAME_BYTES = 200
 
 # Max file size in bytes (50 MB — Telegram Bot API limit for getFile)
 _MAX_FILE_SIZE = 50 * 1024 * 1024
+_DOWNLOAD_ATTEMPTS = 3
 
 _FILENAME_PUNCT = frozenset("._-")
 
@@ -169,6 +171,22 @@ def _resolve_upload_dir(
     return window_id, upload_path, None
 
 
+async def _download_to_staging(message: Message, file_id: str, staged: Path) -> None:
+    """Retry the Telegram fetch, never the local publication or agent notification."""
+    bot = message.get_bot()
+    for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
+        try:
+            file = await bot.get_file(file_id)
+            await file.download_to_drive(staged)
+        except NetworkError as exc:
+            # PTB classifies BadRequest as a NetworkError, but it is not transient.
+            if isinstance(exc, BadRequest) or attempt == _DOWNLOAD_ATTEMPTS:
+                raise
+            staged.unlink(missing_ok=True)
+        else:
+            return
+
+
 async def _download_and_save(
     message: Message,
     upload_path: Path,
@@ -203,26 +221,31 @@ async def _download_and_save(
             logger.error("Path traversal attempt blocked: %s", filename)
             await safe_reply(message, "\u274c Invalid filename.")
             return None
-        dest = _unique_dest(dest)
-        filename = dest.name
-        file = await message.get_bot().get_file(file_id)
-        await file.download_to_drive(str(dest))
-        # Post-download size check (file_size can be None from Telegram API)
-        actual_size = dest.stat().st_size
-        if actual_size > _MAX_FILE_SIZE:
-            dest.unlink(missing_ok=True)
-            size_mb = actual_size / (1024 * 1024)
-            await safe_reply(
-                message,
-                f"\u274c {size_label} too large ({size_mb:.1f} MB). Maximum {_MAX_FILE_SIZE // (1024 * 1024)} MB.",
-            )
-            return None
+        # Keep partial files private and clean them up even on failure or cancellation.
+        with TemporaryDirectory(prefix=".download-", dir=upload_path) as staging_dir:
+            staged = Path(staging_dir) / "file"
+            await _download_to_staging(message, file_id, staged)
+            # Metadata can be missing or inaccurate. Never publish an oversized file.
+            actual_size = staged.stat().st_size
+            if actual_size <= _MAX_FILE_SIZE:
+                # The download awaited the network; another upload may now own the
+                # original name. A hard link also protects the final name from races.
+                if upload_path.is_symlink():
+                    raise OSError("Upload directory became a symlink")
+                dest = _unique_dest(dest)
+                dest.hardlink_to(staged)
+                return dest.name
     except (OSError, TelegramError) as e:
         logger.error("Failed to save %s: %s", size_label.lower(), e)
         await safe_reply(message, "\u274c Failed to save file.")
         return None
 
-    return filename
+    size_mb = actual_size / (1024 * 1024)
+    await safe_reply(
+        message,
+        f"\u274c {size_label} too large ({size_mb:.1f} MB). Maximum {_MAX_FILE_SIZE // (1024 * 1024)} MB.",
+    )
+    return None
 
 
 async def _upload_and_notify(

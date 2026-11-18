@@ -803,6 +803,19 @@ Live view (auto-refreshing) uses the same viewport capture at a smaller font siz
 
 Responses longer than 4096 characters are sent as a `.txt` document attachment instead of a text message.
 
+## Upload Photos and Documents to a Session
+
+Send a photo or document to a bound topic. CCGram saves the file under
+`.ccgram-uploads/` in the session's working directory and tells the agent where
+to find it, along with any caption. The upload limit is 50 MB.
+
+If Telegram times out or hits another transient network error while fetching the
+file, CCGram tries up to three times total. Failed downloads don't leave a
+partial upload or replace an existing file. The upload directory's filesystem
+must support hard links so CCGram can save completed files without overwriting
+existing ones. If the file is saved but the agent notification fails, CCGram
+reports that separately and does not resend it.
+
 ## File Delivery (`/send`)
 
 Send files from the bound window's working directory to Telegram. Three modes in one command:
