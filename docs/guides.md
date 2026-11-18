@@ -805,6 +805,25 @@ Live view (auto-refreshing) uses the same viewport capture at a smaller font siz
 
 Responses longer than 4096 characters are sent as a `.txt` document attachment instead of a text message.
 
+## Upload Photos and Documents to a Session
+
+Send a photo or document to a bound topic. CCGram saves the file under
+`.ccgram-uploads/` in the session's working directory and tells the agent where
+to find it, along with any caption. Telegram's hosted Bot API limits
+[`getFile` downloads](https://core.telegram.org/bots/api#getfile) to 20 MB.
+CCGram separately rejects files above its local cap of 50 MiB; this does not
+raise Telegram's limit.
+
+If Telegram times out or hits another transient network error while fetching the
+file, CCGram tries up to three times total, waiting half a second between
+attempts. Failed downloads don't leave a partial upload or replace an existing
+file. When creating a hard link returns `ENOTSUP` or `EOPNOTSUPP` (or `EPERM` on
+Linux, which can mean the filesystem doesn't support hard links), CCGram saves
+the completed file in a new subdirectory under `.ccgram-uploads/`. Telegram
+reports the actual path relative to the session's working directory, even if
+the agent notification fails. The file remains available, and CCGram does not
+resend the notification.
+
 ## File Delivery (`/send`)
 
 Send files from the bound window's working directory to Telegram. Three modes in one command:
