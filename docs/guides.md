@@ -294,6 +294,8 @@ A text batch is eligible only when every item is a non-empty, one-part text task
 
 Each item is rendered to Telegram entities before the items are combined. Formatting opened in one item cannot alter the next item's formatting, and each item retains the formatting it would have had if sent on its own. This makes the batching lossless for eligible text while preserving the delivery boundaries of everything else.
 
+A successful batch acknowledges every original queued item for the transcript watermark, even when several items share a checkpoint or the batch was retried after a Telegram flood wait. A cancelled send or an exhausted retry budget does not advance the watermark past that batch.
+
 ### Queue progress and severe backlogs
 
 The editable topic status bubble shows queue telemetry only for a severe backlog:

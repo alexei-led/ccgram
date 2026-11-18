@@ -700,10 +700,12 @@ def _delivery_receipts_for_settlement(
     merged_receipts: tuple[DeliveryReceipt, ...],
 ) -> list[DeliveryReceipt]:
     receipts = task.delivery_receipts if isinstance(task, ContentTask) else ()
-    unique: dict[int, DeliveryReceipt] = {}
-    for receipt in (*receipts, *merged_receipts):
-        unique[id(receipt)] = receipt
-    return list(unique.values())
+    # A carried text batch already includes the merged suffix. On the first
+    # attempt the suffix is separate, and each reference represents one track
+    # even when multiple original tasks share the same receipt.
+    if isinstance(task, ContentTask) and task.is_text_batch:
+        return list(receipts)
+    return [*receipts, *merged_receipts]
 
 
 def _mark_task_inflight(user_id: int, task: MessageTask) -> None:
