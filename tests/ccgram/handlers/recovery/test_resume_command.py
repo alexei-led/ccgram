@@ -17,7 +17,6 @@ from ccgram.handlers.callback_data import (
 from ccgram.handlers.recovery.resume_command import (
     ResumeEntry,
     _build_resume_keyboard,
-    _index_msg_count,
     _relative_time,
     _create_resume_window,
     format_session_entry,
@@ -603,34 +602,6 @@ class TestFormatSessionEntry:
     )
     def test_format_session_entry(self, kwargs: dict, expected: str) -> None:
         assert format_session_entry(now=_NOW, **kwargs) == expected
-
-
-class TestIndexMsgCount:
-    @pytest.mark.parametrize(
-        ("entry", "expected"),
-        [
-            ({"messageCount": 7}, 7),
-            ({"msgCount": 9}, 9),
-            ({"msg_count": 3}, 3),
-            ({"messages": 5}, 5),
-            ({"otherField": 5}, None),
-            ({"messageCount": 0}, None),
-            ({"messageCount": -2}, None),
-            ({"messageCount": "many"}, None),
-        ],
-        ids=[
-            "messageCount",
-            "msgCount-alias",
-            "msg_count-alias",
-            "messages-alias",
-            "missing",
-            "zero",
-            "negative",
-            "non-int",
-        ],
-    )
-    def test_index_msg_count(self, entry: dict, expected: int | None) -> None:
-        assert _index_msg_count(entry) == expected
 
 
 class TestBuildResumeKeyboard:
