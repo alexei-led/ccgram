@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.25.0] - 2026-11-18
+
+### Fixed
+
+- Advance the delivery checkpoint after a merged Telegram send completes, even when several messages share one receipt. This prevents a stuck checkpoint from replaying already delivered transcript output after a restart ([#395](https://github.com/alexei-led/ccgram/issues/395)).
+- Retry transient Telegram photo and document downloads up to three attempts total. Only completed files are saved, existing uploads are not overwritten, and Telegram reports the saved path even if the agent could not be notified ([#397](https://github.com/alexei-led/ccgram/issues/397)).
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.24.0...v4.25.0)
+
 ## [4.24.0] - 2026-11-17
 
 ### Flag-driven topic lifecycle
