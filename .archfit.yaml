@@ -1,6 +1,6 @@
 # The Archfit policy, converted by archfit init from the Archfit 3 files.
 # Review the modules, rules and exceptions, then commit it.
-version: 3
+version: 1
 owners:
   - alexei-led
 gate: advisory
